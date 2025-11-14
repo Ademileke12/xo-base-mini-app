@@ -1,0 +1,31 @@
+{
+  "accountAssociation": {
+    "header": "",
+    "payload": "",
+    "signature": ""
+  },
+  "baseBuilder": {
+    "ownerAddress": "0x7f5091405c0fac32cd5d70f6212ffe94227229c1"
+  },
+  "miniapp": {
+    "version": "1",
+    "name": "X & O",
+    "homeUrl": "https://xo-base-mini-appv1.vercel.app",
+    "iconUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
+    "splashImageUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
+    "splashBackgroundColor": "#020617",
+    "subtitle": "Onchain Tic-Tac-Toe",
+    "description": "Play wallet-gated Tic-Tac-Toe on Base. Battle AI, local friends, or online opponents and climb the leaderboard.",
+    "screenshotUrls": [
+      "https://i.postimg.cc/wTW0YVP5/X-O.png"
+    ],
+    "primaryCategory": "games",
+    "tags": ["game", "tic-tac-toe", "base"],
+    "heroImageUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
+    "tagline": "Onchain X & O on Base",
+    "ogTitle": "X & O – Base Mini App",
+    "ogDescription": "Wallet-gated Tic-Tac-Toe on Base with online multiplayer.",
+    "ogImageUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
+    "noindex": true
+  }
+}
