@@ -22,8 +22,8 @@
     "primaryCategory": "games",
     "tags": ["game", "tictactoe", "base"],
     "heroImageUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
-    "tagline": "Onchain X & O on Base",
-    "ogTitle": "X & O – Base Mini App",
+    "tagline": "Onchain X and O on Base",
+    "ogTitle": "X and O - Base Mini App",
     "ogDescription": "Wallet-gated Tic-Tac-Toe on Base with online multiplayer.",
     "ogImageUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
     "noindex": true
