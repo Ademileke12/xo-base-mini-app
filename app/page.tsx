@@ -1,0 +1,1215 @@
+"use client";
+
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  Repeat,
+  Home,
+  Users,
+  Cpu,
+  TrendingUp,
+  RotateCcw,
+  BarChart,
+  X,
+  User,
+  DollarSign,
+  Loader2,
+} from "lucide-react";
+import { initializeApp } from "firebase/app";
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  onSnapshot,
+  runTransaction,
+  collection,
+  query,
+  orderBy,
+  limit,
+  getDocs,
+} from "firebase/firestore";
+
+import { useAccount } from "wagmi";
+import {
+  Wallet,
+  ConnectWallet,
+  WalletDropdown,
+  WalletDropdownDisconnect,
+} from "@coinbase/onchainkit/wallet";
+
+// --- Firebase config ---
+const firebaseConfig = {
+  apiKey: "AIzaSyDBQPgse6PZn-FQBo8Bv5HF8mNxjXrydl4",
+  authDomain: "x-and-o-29358.firebaseapp.com",
+  projectId: "x-and-o-29358",
+  storageBucket: "x-and-o-29358.firebasestorage.app",
+  messagingSenderId: "934577439632",
+  appId: "1:934577439632:web:bc8bd3afa14dabbaeea915",
+};
+
+let firebaseApp: any = null;
+let db: any = null;
+
+try {
+  firebaseApp = initializeApp(firebaseConfig);
+  db = getFirestore(firebaseApp);
+} catch (e) {
+  console.error("Firebase initialization error:", e);
+}
+
+// --- Game Constants and Types ---
+const WINNING_COMBINATIONS = [
+  [0, 1, 2],
+  [3, 4, 5],
+  [6, 7, 8],
+  [0, 3, 6],
+  [1, 4, 7],
+  [2, 5, 8],
+  [0, 4, 8],
+  [2, 4, 6],
+];
+
+type Symbol = "X" | "O";
+type GameMode = "local" | "ai" | "online";
+type Board = (Symbol | null)[];
+type PlayerData = {
+  nickname: string;
+  wallet: number;
+  walletAddress: string | null;
+};
+
+// --- AI Logic ---
+const checkWinner = (board: Board) => {
+  for (let [a, b, c] of WINNING_COMBINATIONS) {
+    if (board[a] && board[a] === board[b] && board[a] === board[c])
+      return board[a];
+  }
+  return null;
+};
+
+const minimax = (
+  board: Board,
+  depth: number,
+  isMax: boolean,
+  player: Symbol,
+  opponent: Symbol
+): number => {
+  const winner = checkWinner(board);
+  if (winner === player) return 10 - depth;
+  if (winner === opponent) return depth - 10;
+  if (board.every((c) => c !== null)) return 0;
+
+  const available = board
+    .map((v, i) => (v === null ? i : null))
+    .filter((v) => v !== null) as number[];
+
+  if (isMax) {
+    let best = -Infinity;
+    for (let i of available) {
+      board[i] = player;
+      const score = minimax(board, depth + 1, false, player, opponent);
+      board[i] = null;
+      best = Math.max(score, best);
+    }
+    return best;
+  } else {
+    let best = Infinity;
+    for (let i of available) {
+      board[i] = opponent;
+      const score = minimax(board, depth + 1, true, player, opponent);
+      board[i] = null;
+      best = Math.min(score, best);
+    }
+    return best;
+  }
+};
+
+const findBestMove = (
+  board: Board,
+  player: Symbol,
+  opponent: Symbol,
+  difficulty: "medium" | "hard"
+) => {
+  const available = board
+    .map((v, i) => (v === null ? i : null))
+    .filter((v) => v !== null) as number[];
+  if (available.length === 0) return null;
+
+  if (difficulty === "hard") {
+    let bestScore = -Infinity,
+      bestMove = available[0];
+    for (let i of available) {
+      board[i] = player;
+      const score = minimax(board, 0, false, player, opponent);
+      board[i] = null;
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = i;
+      }
+    }
+    return bestMove;
+  }
+
+  // Medium: 20% random move
+  if (Math.random() < 0.2) {
+    return available[Math.floor(Math.random() * available.length)];
+  } else {
+    let bestScore = -Infinity,
+      bestMove = available[0];
+    for (let i of available) {
+      board[i] = player;
+      const score = minimax(board, 0, false, player, opponent);
+      board[i] = null;
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = i;
+      }
+    }
+    return bestMove;
+  }
+};
+
+// --- Initial Game State ---
+const initialGameState = {
+  board: Array(9).fill(null) as Board,
+  isXNext: true,
+  winner: null as Symbol | null,
+  winningCombo: null as number[] | null,
+  playerX: null as string | null, // wallet address
+  playerO: null as string | null, // wallet address
+  gameMode: "local" as GameMode,
+  lastUpdated: Date.now(),
+  isGameOver: false,
+};
+
+// --- Initial Stats and User Data ---
+const initialStats = {
+  wins: 0,
+  losses: 0,
+  draws: 0,
+  onlineWins: 0,
+};
+
+const initialUserData: PlayerData = {
+  nickname: "Guest",
+  wallet: 100, // Initial wallet balance
+  walletAddress: null,
+};
+
+// --- Animated X and O ---
+const AnimatedX = () => (
+  <div className="flex justify-center items-center w-full h-full text-8xl font-black text-red-500">
+    <span className="animate-in fade-in zoom-in duration-500">X</span>
+  </div>
+);
+
+const AnimatedO = () => (
+  <div className="flex justify-center items-center w-full h-full text-8xl font-black text-blue-600">
+    <span className="animate-in fade-in zoom-in duration-500">O</span>
+  </div>
+);
+
+// --- Glowing Base Logo ---
+const BaseLogoGlow = ({ connected }: { connected: boolean }) => (
+  <div className="flex items-center gap-3">
+    <div className="relative">
+      <div className="h-10 w-10 rounded-full bg-black flex items-center justify-center border border-sky-400/40 overflow-hidden">
+        <div
+          className={`absolute inset-0 rounded-full blur-xl bg-sky-400/70 transition-opacity ${
+            connected ? "opacity-100 animate-pulse" : "opacity-0"
+          }`}
+        />
+        <span className="relative text-[9px] font-semibold tracking-[0.18em] text-white">
+          BASE
+        </span>
+      </div>
+    </div>
+    <span className="text-xs text-sky-200">
+      {connected ? "Base wallet connected" : "Connect Base wallet to start"}
+    </span>
+  </div>
+);
+
+// --- Global Popup System Component ---
+type Popup = { id: number; message: string; type: "error" | "info" };
+let nextPopupId = 0;
+
+const usePopup = () => {
+  const [popups, setPopups] = useState<Popup[]>([]);
+
+  const showPopup = useCallback(
+    (
+      message: string,
+      type: "error" | "info" = "info",
+      duration: number = 3000
+    ) => {
+      const id = nextPopupId++;
+      const newPopup: Popup = { id, message, type };
+      setPopups((prev) => [...prev, newPopup]);
+      setTimeout(() => {
+        setPopups((prev) => prev.filter((p) => p.id !== id));
+      }, duration);
+    },
+    []
+  );
+
+  const PopupContainer = () => (
+    <div className="fixed top-4 right-4 z-[9999] space-y-2">
+      {popups.map((p) => (
+        <div
+          key={p.id}
+          className={`p-3 rounded-lg shadow-xl text-white max-w-xs transition-all duration-300 transform ${
+            p.type === "error" ? "bg-red-600" : "bg-green-600"
+          } animate-in slide-in-from-right`}
+        >
+          {p.message}
+        </div>
+      ))}
+    </div>
+  );
+
+  return { showPopup, PopupContainer };
+};
+
+// --- Main App Component ---
+const App = () => {
+  const { showPopup, PopupContainer } = usePopup();
+
+  // wagmi account from MiniKit / OnchainKit
+  const { address, isConnected } = useAccount();
+
+  // User + wallet
+  const [userData, setUserData] = useState<PlayerData>(initialUserData);
+
+  // Game state
+  const [mode, setMode] = useState<
+    "selection" | "local" | "ai" | "online" | "stats" | "leaderboard"
+  >("selection");
+  const [onlineGameId, setOnlineGameId] = useState<string | null>(null);
+  const [localPlayerSymbol, setLocalPlayerSymbol] = useState<Symbol | null>(
+    null
+  );
+  const [aiDifficulty, setAiDifficulty] = useState<"medium" | "hard">("medium");
+  const [gameState, setGameState] = useState(initialGameState);
+  const [isThinking, setIsThinking] = useState(false);
+  const [message, setMessage] = useState("Welcome to X & O!");
+  const [showModal, setShowModal] = useState(false);
+  const [stats, setStats] = useState(initialStats);
+  const [nicknameInput, setNicknameInput] = useState("");
+  const [joinGameIdInput, setJoinGameIdInput] = useState("");
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
+
+  const currentPlayerSymbol: Symbol = gameState.isXNext ? "X" : "O";
+
+  // Canonical "user id" = wallet address now (from wagmi)
+  const userWallet = address?.toLowerCase() ?? null;
+
+  const isLocalTurn = useMemo(() => {
+    return (
+      mode === "local" ||
+      (mode === "ai" && currentPlayerSymbol === "X") ||
+      (mode === "online" && currentPlayerSymbol === localPlayerSymbol)
+    );
+  }, [mode, currentPlayerSymbol, localPlayerSymbol]);
+
+  // Keep nickname input in sync with loaded user nickname (first time)
+  useEffect(() => {
+    if (userData.nickname && !nicknameInput) {
+      setNicknameInput(userData.nickname);
+    }
+  }, [userData.nickname, nicknameInput]);
+
+  // --- Wallet-based User Data Listener (Firestore) ---
+  useEffect(() => {
+    if (!db || !userWallet) return;
+
+    const userDocRef = doc(db, "users", userWallet);
+
+    const unsubscribeUser = onSnapshot(userDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data() as any;
+        setUserData((prev) => ({
+          ...prev,
+          walletAddress: userWallet,
+          nickname:
+            data.nickname || `Player_${userWallet.slice(2, 6).toUpperCase()}`,
+          wallet: data.wallet !== undefined ? data.wallet : 100,
+        }));
+        setStats((prev) => ({
+          ...prev,
+          wins: data.wins || 0,
+          losses: data.losses || 0,
+          draws: data.draws || 0,
+          onlineWins: data.onlineWins || 0,
+        }));
+      } else {
+        const newUserData = {
+          nickname: `Player_${userWallet.slice(2, 6).toUpperCase()}`,
+          wallet: 100,
+          walletAddress: userWallet,
+          lastLogin: Date.now(),
+        };
+        setDoc(userDocRef, newUserData, { merge: true }).catch((e) =>
+          console.error("Error setting initial user doc:", e)
+        );
+      }
+    });
+
+    return () => unsubscribeUser();
+  }, [userWallet]);
+
+  // --- User Profile Update (nickname) ---
+  const updateNickname = async () => {
+    if (!userWallet || !db || !nicknameInput.trim()) return;
+    try {
+      await setDoc(
+        doc(db, "users", userWallet),
+        { nickname: nicknameInput.trim(), lastUpdated: Date.now() },
+        { merge: true }
+      );
+      showPopup("Nickname updated!", "info");
+    } catch (e) {
+      showPopup("Failed to update nickname.", "error");
+    }
+  };
+
+  // --- Online Game Functions (wallet-based) ---
+  const createOnlineGame = async () => {
+    if (!userWallet || !db) {
+      showPopup("Connect your Base wallet first.", "error");
+      return;
+    }
+    try {
+      const gameId = Math.random().toString(36).substring(2, 10).toUpperCase(); // 8 char ID
+      const gameDocRef = doc(db, "games", gameId);
+      const initial = {
+        ...initialGameState,
+        gameMode: "online",
+        playerX: userWallet,
+        playerO: null,
+        lastUpdated: Date.now(),
+        playerXNickname: userData.nickname,
+      };
+      await setDoc(gameDocRef, initial);
+      setOnlineGameId(gameId);
+      setLocalPlayerSymbol("X");
+      setMode("online");
+      setMessage(`Game ${gameId} created. You are X. Waiting for O...`);
+    } catch (e: any) {
+      console.error(e);
+      showPopup(`Failed to create game: ${e.message}`, "error");
+    }
+  };
+
+  const joinOnlineGame = async (gameIdInput: string) => {
+    if (!userWallet || !db || !gameIdInput) {
+      showPopup("Connect your Base wallet and enter a game ID.", "error");
+      return;
+    }
+    const cleanId = gameIdInput.trim().toUpperCase();
+    try {
+      await runTransaction(db, async (transaction) => {
+        const gameDocRef = doc(db, "games", cleanId);
+        const gameDoc = await transaction.get(gameDocRef);
+        if (!gameDoc.exists()) throw new Error("Game not found.");
+        const data = gameDoc.data() as any;
+        if (data.playerO && data.playerX) throw new Error("Room full.");
+        if (data.playerX === userWallet)
+          throw new Error("You are already X in this game.");
+
+        transaction.update(gameDocRef, {
+          playerO: userWallet,
+          playerONickname: userData.nickname,
+          lastUpdated: Date.now(),
+        });
+        setOnlineGameId(cleanId);
+        setLocalPlayerSymbol("O");
+        setMode("online");
+        setMessage(`Joined Game ${cleanId}. You are O.`);
+      });
+    } catch (e: any) {
+      console.error(e);
+      const msg = e.message.includes("not found")
+        ? "Game not found"
+        : e.message.includes("full")
+        ? "Room full"
+        : e.message;
+      showPopup(msg, "error");
+    }
+  };
+
+  const leaveOnlineGame = async () => {
+    if (!onlineGameId || !db) return;
+
+    try {
+      const gameDocRef = doc(db, "games", onlineGameId);
+      const updateData: any = { lastUpdated: Date.now() };
+
+      if (localPlayerSymbol === "X") {
+        updateData.playerX = null;
+        updateData.playerXNickname = null;
+      } else if (localPlayerSymbol === "O") {
+        updateData.playerO = null;
+        updateData.playerONickname = null;
+      }
+      await setDoc(gameDocRef, updateData, { merge: true });
+      showPopup("Successfully left the game.", "info");
+    } catch (e) {
+      console.error("Failed to leave game:", e);
+      showPopup("Failed to leave game.", "error");
+    }
+
+    setOnlineGameId(null);
+    setLocalPlayerSymbol(null);
+    setMode("selection");
+    setGameState(initialGameState);
+    setMessage("Left online mode.");
+  };
+
+  // --- Online Listener ---
+  useEffect(() => {
+    if (mode !== "online" || !onlineGameId || !db) return;
+
+    const gameDocRef = doc(db, "games", onlineGameId);
+    const unsubscribe = onSnapshot(gameDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data() as any;
+        setGameState((prev) => {
+          // Only update if the game state is newer
+          if (data.lastUpdated > prev.lastUpdated) {
+            const newState = { ...prev, ...data } as typeof initialGameState;
+
+            // Set message and check for local player's symbol after update
+            const winner = checkWinner(newState.board);
+            if (newState.isGameOver) {
+              setMessage(
+                winner
+                  ? `Game Over! Player ${winner} Wins! 🎉`
+                  : "It's a Draw! 🤝"
+              );
+              setShowModal(true);
+            } else if (!newState.playerO || !newState.playerX) {
+              setMessage(`Game ${onlineGameId}: Waiting for opponent...`);
+            } else {
+              setMessage(
+                `Game ${onlineGameId}: ${newState.playerXNickname} (X) vs ${
+                  newState.playerONickname
+                } (O) - ${newState.isXNext ? "X" : "O"}'s Turn`
+              );
+            }
+            return newState;
+          }
+          return prev;
+        });
+      } else {
+        setMessage("Game ended or deleted by opponent.");
+        setOnlineGameId(null);
+        setLocalPlayerSymbol(null);
+        setMode("selection");
+        showPopup("Game not found or ended.", "error");
+      }
+    });
+    return () => unsubscribe();
+  }, [mode, onlineGameId]);
+
+  // --- AI Move ---
+  useEffect(() => {
+    if (
+      mode === "ai" &&
+      currentPlayerSymbol === "O" &&
+      !gameState.winner &&
+      !gameState.board.every((c) => c !== null) &&
+      !isThinking
+    ) {
+      setIsThinking(true);
+      setTimeout(() => {
+        const aiMove = findBestMove(
+          [...gameState.board],
+          "O",
+          "X",
+          aiDifficulty
+        );
+        if (aiMove !== null) handleBoardUpdate(aiMove, "O");
+        setIsThinking(false);
+      }, 500);
+    }
+  }, [
+    mode,
+    currentPlayerSymbol,
+    gameState.board,
+    gameState.winner,
+    isThinking,
+    aiDifficulty,
+  ]);
+
+  // --- Game Logic ---
+  const updateStats = useCallback(
+    async (result: "win" | "loss" | "draw", isOnline: boolean) => {
+      if (!userWallet || !db) return;
+      const userDocRef = doc(db, "users", userWallet);
+
+      await runTransaction(db, async (transaction) => {
+        const userDoc = await transaction.get(userDocRef);
+        if (!userDoc.exists()) return;
+
+        const data = userDoc.data() as any;
+        const update: any = { lastGame: Date.now() };
+
+        if (result === "win") {
+          update.wins = (data.wins || 0) + 1;
+          update.wallet = (data.wallet || 0) + (isOnline ? 5 : 1);
+          if (isOnline) update.onlineWins = (data.onlineWins || 0) + 1;
+        } else if (result === "loss") {
+          update.losses = (data.losses || 0) + 1;
+          update.wallet = Math.max(0, (data.wallet || 0) - (isOnline ? 3 : 0));
+        } else {
+          update.draws = (data.draws || 0) + 1;
+        }
+
+        transaction.update(userDocRef, update);
+      });
+    },
+    [userWallet]
+  );
+
+  const checkGameResult = useCallback(
+    (board: Board, newIsXNext: boolean) => {
+      const winner = checkWinner(board);
+      const draw = board.every((c) => c !== null);
+      let status = "";
+      let resultState = {
+        board,
+        isXNext: newIsXNext,
+        winner,
+        winningCombo: winner
+          ? WINNING_COMBINATIONS.find(
+              ([a, b, c]) =>
+                board[a] === winner &&
+                board[b] === winner &&
+                board[c] === winner
+            ) || null
+          : null,
+        isGameOver: !!winner || draw,
+      };
+
+      if (resultState.isGameOver) {
+        setShowModal(true);
+        if (winner) {
+          status = `Game Over! Player ${winner} Wins! 🎉`;
+          const playerSymbol = mode === "ai" ? "X" : localPlayerSymbol;
+          const res = winner === playerSymbol ? "win" : "loss";
+          updateStats(res, mode === "online");
+        } else {
+          status = "It's a Draw! 🤝";
+          updateStats("draw", mode === "online");
+        }
+      } else {
+        status = `Player ${newIsXNext ? "X" : "O"}'s Turn`;
+      }
+
+      return { ...resultState, message: status };
+    },
+    [mode, localPlayerSymbol, updateStats]
+  );
+
+  const handleBoardUpdate = useCallback(
+    async (index: number, symbol: Symbol) => {
+      const { board, winner, isGameOver } = gameState;
+      if (board[index] || winner || isGameOver) return;
+
+      const newBoard = [...board];
+      newBoard[index] = symbol;
+      const result = checkGameResult(newBoard, !gameState.isXNext);
+
+      if (mode === "online" && onlineGameId && db) {
+        const gameDocRef = doc(db, "games", onlineGameId);
+        const updateData: any = {
+          ...result,
+          lastUpdated: Date.now(),
+        };
+        // Explicitly set nicknames in the online game document for display
+        if (symbol === "X") updateData.playerXNickname = userData.nickname;
+        if (symbol === "O") updateData.playerONickname = userData.nickname;
+
+        await setDoc(gameDocRef, updateData, { merge: true }).catch((e) =>
+          console.error("Firebase update error:", e)
+        );
+      } else {
+        setGameState((prev) => ({ ...prev, ...result }));
+        setMessage(result.message);
+      }
+    },
+    [gameState, mode, onlineGameId, checkGameResult, userData.nickname]
+  );
+
+  const handleClick = (index: number) => {
+    if (!isLocalTurn || isThinking) return;
+    handleBoardUpdate(index, currentPlayerSymbol);
+  };
+
+  const handleRestart = (newMode: GameMode) => {
+    setGameState(initialGameState);
+    setShowModal(false);
+    setIsThinking(false);
+    if (newMode === "online" && onlineGameId) {
+      // Online restart logic
+      if (localPlayerSymbol === "X" && db) {
+        const gameDocRef = doc(db, "games", onlineGameId);
+        setDoc(gameDocRef, initialGameState, { merge: true });
+      }
+      setMessage(`Online Mode: Waiting for host (X) to restart.`);
+    } else {
+      setMessage(
+        newMode === "ai"
+          ? `AI Mode: ${aiDifficulty} - X starts`
+          : `${newMode} Mode: X starts`
+      );
+    }
+  };
+
+  // --- Leaderboard Fetch (wallet-based users collection) ---
+  useEffect(() => {
+    if (mode === "leaderboard" && db) {
+      const fetchLeaderboard = async () => {
+        try {
+          const usersRef = collection(db, "users");
+          // Order by online wins, then local wins, limit to 50
+          const q = query(
+            usersRef,
+            orderBy("onlineWins", "desc"),
+            orderBy("wins", "desc"),
+            limit(50)
+          );
+          const querySnapshot = await getDocs(q);
+          const topUsers = querySnapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }));
+          setLeaderboard(topUsers);
+        } catch (e) {
+          console.error("Error fetching leaderboard:", e);
+          showPopup("Failed to load leaderboard.", "error");
+        }
+      };
+      fetchLeaderboard();
+    }
+  }, [mode, showPopup]);
+
+  // --- UI Components ---
+  const Cell = ({
+    value,
+    index,
+    winning,
+  }: {
+    value: Symbol | null;
+    index: number;
+    winning: boolean;
+  }) => (
+    <div
+      className={`cell flex justify-center items-center text-7xl font-black cursor-pointer shadow-inner transition-colors duration-200 ${
+        winning
+          ? "bg-yellow-400/80 text-gray-900 animate-pulse"
+          : "bg-white hover:bg-gray-100"
+      } ${value === "X" ? "text-red-500" : "text-blue-600"}`}
+      onClick={() => handleClick(index)}
+    >
+      {value === "X" ? <AnimatedX /> : value === "O" ? <AnimatedO /> : null}
+    </div>
+  );
+
+  const RenderBoard = () => (
+    <div className="grid grid-cols-3 grid-rows-3 w-full max-w-sm aspect-square bg-gray-700 rounded-xl shadow-2xl overflow-hidden border-4 border-gray-800">
+      {gameState.board.map((v, i) => (
+        <Cell
+          key={i}
+          value={v as Symbol | null}
+          index={i}
+          winning={!!gameState.winningCombo?.includes(i)}
+        />
+      ))}
+    </div>
+  );
+
+  const HeaderBar = () => (
+    <div className="w-full max-w-md flex justify-between items-center p-3 bg-gray-800 rounded-xl shadow-lg mb-4 text-white">
+      <BaseLogoGlow connected={!!userWallet} />
+      <div className="flex flex-col items-end space-y-1">
+        <div className="flex items-center space-x-2">
+          <User size={18} className="text-indigo-400" />
+          <span className="text-sm font-semibold truncate max-w-[120px]">
+            {userData.nickname}
+          </span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <DollarSign size={18} className="text-green-400" />
+          <span className="text-sm font-semibold">{userData.wallet}</span>
+        </div>
+      </div>
+    </div>
+  );
+
+  const RenderOnlineSetup = () => (
+    <div className="w-full flex flex-col items-center bg-green-700 p-4 rounded-xl shadow-lg text-white space-y-3">
+      <TrendingUp className="mb-2" />
+      <h3 className="text-xl font-semibold">Online Multiplayer</h3>
+      {!isConnected || !userWallet ? (
+        <p className="text-yellow-300">
+          Connect your Base wallet to play online.
+        </p>
+      ) : onlineGameId ? (
+        <div className="w-full text-center">
+          <p className="text-sm font-bold mb-2">
+            In Game: {onlineGameId} ({localPlayerSymbol})
+          </p>
+          <button
+            onClick={() => setMode("online")}
+            className="w-full p-3 bg-green-500 rounded-lg hover:bg-green-600 font-semibold"
+          >
+            Go To Game
+          </button>
+          <button
+            onClick={leaveOnlineGame}
+            className="mt-2 text-red-300 hover:text-red-400 underline text-sm"
+          >
+            Leave Game
+          </button>
+        </div>
+      ) : (
+        <>
+          <button
+            onClick={createOnlineGame}
+            className="w-full p-3 bg-green-800 rounded-lg hover:bg-green-900 font-semibold"
+          >
+            Create Game (Be X)
+          </button>
+          <input
+            type="text"
+            placeholder="Enter Game ID"
+            value={joinGameIdInput}
+            onChange={(e) => setJoinGameIdInput(e.target.value.toUpperCase())}
+            className="w-full p-2 rounded text-gray-900 placeholder-gray-500 text-center font-mono uppercase"
+            maxLength={8}
+          />
+          <button
+            onClick={() => joinOnlineGame(joinGameIdInput)}
+            disabled={joinGameIdInput.length < 4}
+            className={`w-full p-3 rounded-lg font-semibold transition ${
+              joinGameIdInput.length < 4
+                ? "bg-green-500/50 cursor-not-allowed"
+                : "bg-green-500 hover:bg-green-600"
+            }`}
+          >
+            Join Game (Be O)
+          </button>
+        </>
+      )}
+    </div>
+  );
+
+  const RenderSelection = () => (
+    <div className="flex flex-col items-center w-full max-w-sm space-y-4">
+      <h2 className="text-3xl font-bold text-white mb-4">Choose Game Mode</h2>
+      <button
+        onClick={() => {
+          setMode("local");
+          handleRestart("local");
+        }}
+        className="w-full p-4 bg-indigo-600 text-white rounded-xl shadow-lg hover:bg-indigo-700 flex items-center justify-center"
+      >
+        <Users className="mr-3" /> Local 2-Player
+      </button>
+
+      <div className="flex flex-col w-full space-y-2 p-4 bg-purple-700 rounded-xl shadow-lg">
+        <div className="flex items-center justify-center w-full text-white">
+          <Cpu className="mr-2" /> Play with AI (You are X)
+        </div>
+        <div className="flex justify-between mt-2">
+          <button
+            onClick={() => {
+              setAiDifficulty("medium");
+              setMode("ai");
+              handleRestart("ai");
+            }}
+            className={`py-2 px-4 rounded-full font-semibold transition ${
+              aiDifficulty === "medium"
+                ? "bg-purple-800"
+                : "bg-purple-500 hover:bg-purple-600"
+            }`}
+          >
+            Medium
+          </button>
+          <button
+            onClick={() => {
+              setAiDifficulty("hard");
+              setMode("ai");
+              handleRestart("ai");
+            }}
+            className={`py-2 px-4 rounded-full font-semibold transition ${
+              aiDifficulty === "hard"
+                ? "bg-purple-800"
+                : "bg-purple-500 hover:bg-purple-600"
+            }`}
+          >
+            Hard
+          </button>
+        </div>
+      </div>
+
+      <RenderOnlineSetup />
+    </div>
+  );
+
+  const RenderSettings = () => (
+    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-800 rounded-xl text-white space-y-4">
+      <h2 className="text-2xl font-bold">User Profile</h2>
+      <div className="w-full">
+        <label htmlFor="nickname" className="text-sm block mb-1">
+          Nickname:
+        </label>
+        <div className="flex space-x-2">
+          <input
+            id="nickname"
+            type="text"
+            value={nicknameInput}
+            onChange={(e) => setNicknameInput(e.target.value)}
+            className="flex-grow p-2 rounded text-gray-900"
+            maxLength={15}
+          />
+          <button
+            onClick={updateNickname}
+            disabled={!nicknameInput.trim()}
+            className={`p-2 rounded font-semibold transition ${
+              !nicknameInput.trim()
+                ? "bg-indigo-400/50"
+                : "bg-indigo-600 hover:bg-indigo-700"
+            }`}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+      <div className="w-full p-3 bg-gray-700 rounded-lg flex justify-between items-center">
+        <span className="font-semibold">Wallet balance:</span>
+        <span className="flex items-center">
+          <DollarSign size={16} className="text-green-400 mr-1" />
+          {userData.wallet}
+        </span>
+      </div>
+      {userWallet && (
+        <div className="w-full p-3 bg-gray-700 rounded-lg text-xs break-all text-gray-300">
+          Wallet address: {userWallet}
+        </div>
+      )}
+      <button
+        onClick={() => setMode("selection")}
+        className="mt-2 w-full bg-red-600 p-3 rounded-lg hover:bg-red-700"
+      >
+        Back to Menu
+      </button>
+    </div>
+  );
+
+  const StatsPage = () => (
+    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-800 rounded-xl text-white space-y-3">
+      <h2 className="text-2xl font-bold mb-2">Your Stats</h2>
+      <div className="w-full flex justify-between p-2 bg-gray-700 rounded-lg">
+        <span>Wins (vs AI/Local):</span>
+        <span className="font-semibold">{stats.wins}</span>
+      </div>
+      <div className="w-full flex justify-between p-2 bg-gray-700 rounded-lg">
+        <span>Losses (vs AI/Local):</span>
+        <span className="font-semibold">{stats.losses}</span>
+      </div>
+      <div className="w-full flex justify-between p-2 bg-gray-700 rounded-lg">
+        <span>Draws (vs AI/Local):</span>
+        <span className="font-semibold">{stats.draws}</span>
+      </div>
+      <div className="w-full flex justify-between p-2 bg-green-800 rounded-lg">
+        <span>Online Wins:</span>
+        <span className="font-bold text-lg">{stats.onlineWins}</span>
+      </div>
+      <button
+        onClick={() => setMode("selection")}
+        className="mt-2 w-full bg-indigo-600 p-3 rounded-lg hover:bg-indigo-700"
+      >
+        Back
+      </button>
+    </div>
+  );
+
+  const LeaderboardPage = () => (
+    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-800 rounded-xl text-white space-y-3">
+      <h2 className="text-2xl font-bold mb-2 flex items-center">
+        <BarChart className="mr-2" /> Top 50 Wins (Online)
+      </h2>
+      {leaderboard.length === 0 ? (
+        <div className="flex items-center justify-center p-4">
+          <Loader2 className="animate-spin mr-2" /> Loading Leaderboard...
+        </div>
+      ) : (
+        <div className="w-full space-y-1">
+          <div className="flex justify-between font-bold text-sm border-b pb-1 border-gray-600">
+            <span className="w-1/6">#</span>
+            <span className="w-3/6">Player</span>
+            <span className="w-2/6 text-right">Online Wins</span>
+          </div>
+          {leaderboard.map((user: any, index: number) => (
+            <div
+              key={user.id}
+              className={`flex justify-between p-2 rounded-lg ${
+                user.id === userWallet
+                  ? "bg-yellow-800/50 font-bold"
+                  : "bg-gray-700"
+              }`}
+            >
+              <span className="w-1/6">{index + 1}</span>
+              <span className="w-3/6 truncate">{user.nickname || "Anon"}</span>
+              <span className="w-2/6 text-right">{user.onlineWins || 0}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <button
+        onClick={() => setMode("selection")}
+        className="mt-2 w-full bg-indigo-600 p-3 rounded-lg hover:bg-indigo-700"
+      >
+        Back
+      </button>
+    </div>
+  );
+
+  const MenuItem = ({
+    Icon,
+    label,
+    onClick,
+    active,
+  }: {
+    Icon: any;
+    label: string;
+    onClick: () => void;
+    active: boolean;
+  }) => (
+    <button
+      className={`flex flex-col items-center text-xs font-medium p-2 transition-colors ${
+        active ? "text-blue-600" : "text-gray-900 hover:text-blue-400"
+      }`}
+      onClick={onClick}
+    >
+      <Icon size={20} />
+      <span>{label}</span>
+    </button>
+  );
+
+  const FooterMenu = () => (
+    <div className="fixed bottom-0 left-0 right-0 h-16 bg-white flex justify-around items-center shadow-2xl z-10 border-t-4 border-gray-900">
+      <MenuItem
+        Icon={Home}
+        label="Menu"
+        onClick={() => setMode("selection")}
+        active={mode === "selection"}
+      />
+      <MenuItem
+        Icon={Users}
+        label="Local"
+        onClick={() => setMode("local")}
+        active={mode === "local"}
+      />
+      <MenuItem
+        Icon={Cpu}
+        label="AI"
+        onClick={() => setMode("ai")}
+        active={mode === "ai"}
+      />
+      <MenuItem
+        Icon={TrendingUp}
+        label="Online"
+        onClick={() => setMode("online")}
+        active={mode === "online" || onlineGameId !== null}
+      />
+      <MenuItem
+        Icon={BarChart}
+        label="Leaderboard"
+        onClick={() => setMode("leaderboard")}
+        active={mode === "leaderboard"}
+      />
+      <MenuItem
+        Icon={User}
+        label="Profile"
+        onClick={() => setMode("stats")}
+        active={mode === "stats"}
+      />
+    </div>
+  );
+
+  const Modal = useMemo(() => {
+    if (!showModal) return null;
+    return (
+      <div className="fixed inset-0 bg-gray-900 bg-opacity-90 flex justify-center items-center z-50 p-4">
+        <div className="bg-white text-gray-900 p-8 rounded-xl shadow-2xl w-full max-w-md text-center transform transition-all scale-100 animate-fade-in">
+          <h2 className="text-3xl font-bold mb-4">
+            {gameState.winner
+              ? `Player ${gameState.winner} Wins!`
+              : "Game Draw"}
+          </h2>
+          <p className="mb-6 text-lg">
+            {gameState.winner ? "Victory!" : "Well matched!"}
+          </p>
+          <button
+            onClick={() => handleRestart(mode as GameMode)}
+            className="w-full bg-indigo-600 text-white p-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 flex items-center justify-center"
+          >
+            <RotateCcw size={20} className="mr-2" />
+            Play Again
+          </button>
+          <button
+            onClick={() => setMode("selection")}
+            className="w-full mt-3 bg-gray-200 text-gray-800 p-3 rounded-lg font-semibold hover:bg-gray-300 transition duration-150"
+          >
+            Change Mode
+          </button>
+          {mode === "online" && onlineGameId && (
+            <button
+              onClick={leaveOnlineGame}
+              className="w-full mt-3 text-red-500 hover:text-red-700 underline font-semibold transition duration-150"
+            >
+              Leave Online Game
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }, [showModal, gameState.winner, mode, onlineGameId, leaveOnlineGame]);
+
+  const RenderLeaveButton = () => {
+    if (mode === "selection" || mode === "stats" || mode === "leaderboard")
+      return null;
+    return (
+      <button
+        onClick={
+          mode === "online" ? leaveOnlineGame : () => setMode("selection")
+        }
+        className="absolute top-4 left-4 p-2 bg-red-600 text-white rounded-full shadow-lg hover:bg-red-700 z-20"
+        title={`Leave ${mode} mode`}
+      >
+        <X size={20} />
+      </button>
+    );
+  };
+
+  // --- HARD GATE: wallet required before game ---
+  if (!isConnected || !userWallet) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4">
+        <h1 className="text-4xl font-extrabold mb-6 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-600">
+          X & O
+        </h1>
+        <BaseLogoGlow connected={false} />
+        <p className="mt-4 text-sm text-gray-300 text-center max-w-xs">
+          Connect your{" "}
+          <span className="font-semibold text-sky-300">Base wallet</span> to
+          start playing. Your wins and rewards are stored by wallet address.
+        </p>
+
+        <div className="mt-6">
+          <Wallet>
+            <ConnectWallet className="px-6 py-3 rounded-full bg-sky-500 hover:bg-sky-400 text-black font-semibold shadow-lg flex items-center">
+              <DollarSign size={18} className="mr-2" />
+              Connect Base Wallet
+            </ConnectWallet>
+            <WalletDropdown>
+              <WalletDropdownDisconnect />
+            </WalletDropdown>
+          </Wallet>
+        </div>
+
+        <PopupContainer />
+        <div className="absolute bottom-2 right-4 text-xs text-gray-400">
+          Created by anakincoco
+        </div>
+      </div>
+    );
+  }
+
+  // --- Main Game UI (wallet connected) ---
+  return (
+    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center p-4 sm:p-6 pb-20 font-inter relative">
+      <h1 className="text-4xl font-extrabold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-600">
+        X & O
+      </h1>
+
+      {RenderLeaveButton()}
+      <HeaderBar />
+
+      <div className="w-full max-w-lg flex flex-col items-center flex-grow">
+        {mode === "selection" && <RenderSelection />}
+        {mode === "stats" && <RenderSettings />}
+        {mode === "leaderboard" && <LeaderboardPage />}
+        {(mode === "local" || mode === "ai" || mode === "online") && (
+          <>
+            <div className="text-center mb-6">
+              <p className="text-lg font-semibold">{message}</p>
+              {isThinking && (
+                <p className="text-yellow-400 mt-2 flex items-center justify-center">
+                  <Cpu className="mr-2 animate-pulse" size={16} /> AI is
+                  thinking...
+                </p>
+              )}
+            </div>
+            <RenderBoard />
+            {(mode === "local" || mode === "ai") && !gameState.isGameOver && (
+              <button
+                onClick={() => handleRestart(mode as GameMode)}
+                className="mt-4 p-3 bg-gray-700 text-white rounded-lg font-semibold hover:bg-gray-600 flex items-center"
+              >
+                <Repeat size={20} className="mr-2" /> Reset Game
+              </button>
+            )}
+            {mode === "online" && (
+              <div className="mt-4 p-3 bg-gray-700 text-white rounded-lg text-sm text-center">
+                <p>
+                  Game ID:{" "}
+                  <span className="font-mono font-bold">{onlineGameId}</span>
+                </p>
+                <p>
+                  You are:{" "}
+                  <span
+                    className={`font-bold ${
+                      localPlayerSymbol === "X"
+                        ? "text-red-500"
+                        : "text-blue-500"
+                    }`}
+                  >
+                    {localPlayerSymbol}
+                  </span>
+                </p>
+                {gameState.playerX && gameState.playerO && (
+                  <p className="mt-1">
+                    Players: {gameState.playerXNickname} (X) vs{" "}
+                    {gameState.playerONickname} (O)
+                  </p>
+                )}
+                {localPlayerSymbol === "X" &&
+                  !gameState.winner &&
+                  !gameState.board.every((c) => c !== null) && (
+                    <button
+                      onClick={() => handleRestart("online")}
+                      className="mt-2 text-yellow-400 hover:text-yellow-500 underline text-sm"
+                    >
+                      Force Restart (Host)
+                    </button>
+                  )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+      <FooterMenu />
+      {Modal}
+      <PopupContainer />
+      <div className="absolute bottom-2 right-4 text-xs text-gray-400">
+        Created by anakincoco
+      </div>
+    </div>
+  );
+};
+
+export default App;
