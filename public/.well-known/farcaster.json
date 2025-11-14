@@ -1,8 +1,8 @@
 {
   "accountAssociation": {
-    "header": "",
-    "payload": "",
-    "signature": ""
+    "header": "eyJmaWQiOjE0NzE4NTksInR5cGUiOiJjdXN0b2R5Iiwia2V5IjoiMHgxMjI5NzE3NkQzMTkxNjgwMzBjZWUxZjU4YkYyNzQyNDlmNUVENDQzIn0",
+    "payload": "eyJkb21haW4iOiJ4by1iYXNlLW1pbmktYXBwdjEudmVyY2VsLmFwcCJ9",
+    "signature": "+JDkk7FWQI/oJSltO9SiLh44LCQ3J0zIlAKFygMDNq0QvxESo6wuTcIK+Z55vO6/kmmwVaA/gX08dBAPBIaSbBs="
   },
   "baseBuilder": {
     "ownerAddress": "0x7f5091405c0fac32cd5d70f6212ffe94227229c1"
@@ -16,9 +16,7 @@
     "splashBackgroundColor": "#020617",
     "subtitle": "Onchain Tic-Tac-Toe",
     "description": "Play wallet-gated Tic-Tac-Toe on Base. Battle AI, local friends, or online opponents and climb the leaderboard.",
-    "screenshotUrls": [
-      "https://i.postimg.cc/wTW0YVP5/X-O.png"
-    ],
+    "screenshotUrls": ["https://i.postimg.cc/wTW0YVP5/X-O.png"],
     "primaryCategory": "games",
     "tags": ["game", "tictactoe", "base"],
     "heroImageUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
