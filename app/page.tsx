@@ -71,10 +71,25 @@ const WINNING_COMBINATIONS = [
 type Symbol = "X" | "O";
 type GameMode = "local" | "ai" | "online";
 type Board = (Symbol | null)[];
+
 type PlayerData = {
   nickname: string;
   wallet: number;
   walletAddress: string | null;
+};
+
+type GameState = {
+  board: Board;
+  isXNext: boolean;
+  winner: Symbol | null;
+  winningCombo: number[] | null;
+  playerX: string | null; // wallet address
+  playerO: string | null; // wallet address
+  gameMode: GameMode;
+  lastUpdated: number;
+  isGameOver: boolean;
+  playerXNickname: string | null;
+  playerONickname: string | null;
 };
 
 // --- AI Logic ---
@@ -169,16 +184,18 @@ const findBestMove = (
 };
 
 // --- Initial Game State ---
-const initialGameState = {
+const initialGameState: GameState = {
   board: Array(9).fill(null) as Board,
   isXNext: true,
-  winner: null as Symbol | null,
-  winningCombo: null as number[] | null,
-  playerX: null as string | null, // wallet address
-  playerO: null as string | null, // wallet address
-  gameMode: "local" as GameMode,
+  winner: null,
+  winningCombo: null,
+  playerX: null,
+  playerO: null,
+  gameMode: "local",
   lastUpdated: Date.now(),
   isGameOver: false,
+  playerXNickname: null,
+  playerONickname: null,
 };
 
 // --- Initial Stats and User Data ---
@@ -289,7 +306,7 @@ const App = () => {
     null
   );
   const [aiDifficulty, setAiDifficulty] = useState<"medium" | "hard">("medium");
-  const [gameState, setGameState] = useState(initialGameState);
+  const [gameState, setGameState] = useState<GameState>(initialGameState);
   const [isThinking, setIsThinking] = useState(false);
   const [message, setMessage] = useState("Welcome to X & O!");
   const [showModal, setShowModal] = useState(false);
@@ -381,13 +398,14 @@ const App = () => {
     try {
       const gameId = Math.random().toString(36).substring(2, 10).toUpperCase(); // 8 char ID
       const gameDocRef = doc(db, "games", gameId);
-      const initial = {
+      const initial: GameState = {
         ...initialGameState,
         gameMode: "online",
         playerX: userWallet,
         playerO: null,
         lastUpdated: Date.now(),
         playerXNickname: userData.nickname,
+        playerONickname: null,
       };
       await setDoc(gameDocRef, initial);
       setOnlineGameId(gameId);
@@ -407,7 +425,7 @@ const App = () => {
     }
     const cleanId = gameIdInput.trim().toUpperCase();
     try {
-      await runTransaction(db, async (transaction) => {
+      await runTransaction(db, async (transaction: any) => {
         const gameDocRef = doc(db, "games", cleanId);
         const gameDoc = await transaction.get(gameDocRef);
         if (!gameDoc.exists()) throw new Error("Game not found.");
@@ -442,7 +460,9 @@ const App = () => {
 
     try {
       const gameDocRef = doc(db, "games", onlineGameId);
-      const updateData: any = { lastUpdated: Date.now() };
+      const updateData: Partial<GameState> & { lastUpdated: number } = {
+        lastUpdated: Date.now(),
+      };
 
       if (localPlayerSymbol === "X") {
         updateData.playerX = null;
@@ -472,11 +492,17 @@ const App = () => {
     const gameDocRef = doc(db, "games", onlineGameId);
     const unsubscribe = onSnapshot(gameDocRef, (docSnap) => {
       if (docSnap.exists()) {
-        const data = docSnap.data() as any;
+        const data = docSnap.data() as Partial<GameState>;
         setGameState((prev) => {
           // Only update if the game state is newer
-          if (data.lastUpdated > prev.lastUpdated) {
-            const newState = { ...prev, ...data } as typeof initialGameState;
+          if (
+            typeof data.lastUpdated === "number" &&
+            data.lastUpdated > prev.lastUpdated
+          ) {
+            const newState: GameState = {
+              ...prev,
+              ...data,
+            };
 
             // Set message and check for local player's symbol after update
             const winner = checkWinner(newState.board);
@@ -547,7 +573,7 @@ const App = () => {
       if (!userWallet || !db) return;
       const userDocRef = doc(db, "users", userWallet);
 
-      await runTransaction(db, async (transaction) => {
+      await runTransaction(db, async (transaction: any) => {
         const userDoc = await transaction.get(userDocRef);
         if (!userDoc.exists()) return;
 
@@ -576,18 +602,24 @@ const App = () => {
       const winner = checkWinner(board);
       const draw = board.every((c) => c !== null);
       let status = "";
-      let resultState = {
+      const winningCombo =
+        winner &&
+        (WINNING_COMBINATIONS.find(
+          ([a, b, c]) =>
+            board[a] === winner && board[b] === winner && board[c] === winner
+        ) || null);
+
+      const resultState: Partial<GameState> & {
+        board: Board;
+        isXNext: boolean;
+        winner: Symbol | null;
+        isGameOver: boolean;
+        winningCombo: number[] | null;
+      } = {
         board,
         isXNext: newIsXNext,
         winner,
-        winningCombo: winner
-          ? WINNING_COMBINATIONS.find(
-              ([a, b, c]) =>
-                board[a] === winner &&
-                board[b] === winner &&
-                board[c] === winner
-            ) || null
-          : null,
+        winningCombo,
         isGameOver: !!winner || draw,
       };
 
@@ -622,8 +654,16 @@ const App = () => {
 
       if (mode === "online" && onlineGameId && db) {
         const gameDocRef = doc(db, "games", onlineGameId);
-        const updateData: any = {
-          ...result,
+        const updateData: Partial<GameState> & {
+          lastUpdated: number;
+          board: Board;
+          isXNext: boolean;
+          winner: Symbol | null;
+          winningCombo: number[] | null;
+          isGameOver: boolean;
+          message: string;
+        } = {
+          ...(result as any),
           lastUpdated: Date.now(),
         };
         // Explicitly set nicknames in the online game document for display
@@ -634,7 +674,7 @@ const App = () => {
           console.error("Firebase update error:", e)
         );
       } else {
-        setGameState((prev) => ({ ...prev, ...result }));
+        setGameState((prev) => ({ ...prev, ...(result as any) }));
         setMessage(result.message);
       }
     },
