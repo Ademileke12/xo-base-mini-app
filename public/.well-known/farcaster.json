@@ -16,7 +16,9 @@
     "splashBackgroundColor": "#020617",
     "subtitle": "Onchain Tic-Tac-Toe",
     "description": "Play wallet-gated Tic-Tac-Toe on Base. Battle AI, local friends, or online opponents and climb the leaderboard.",
-    "screenshotUrls": ["https://i.postimg.cc/wTW0YVP5/X-O.png"],
+    "screenshotUrls": [
+      "https://i.postimg.cc/wTW0YVP5/X-O.png"
+    ],
     "primaryCategory": "games",
     "tags": ["game", "tictactoe", "base"],
     "heroImageUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
