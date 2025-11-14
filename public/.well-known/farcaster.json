@@ -14,6 +14,7 @@
     "iconUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
     "splashImageUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
     "splashBackgroundColor": "#020617",
+    "webhookUrl": "https://xo-base-mini-appv1.vercel.app/api/webhook",
     "subtitle": "Onchain Tic-Tac-Toe",
     "description": "Play wallet-gated Tic-Tac-Toe on Base. Battle AI, local friends, or online opponents and climb the leaderboard.",
     "screenshotUrls": [
