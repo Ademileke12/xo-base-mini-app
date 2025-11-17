@@ -1378,9 +1378,9 @@ const App = () => {
           <span className="font-semibold text-emerald-300">
             Onchain safety note:
           </span>{" "}
-          This screen is UI-only right now. Before using real USDC, connect
+          {/* This screen is UI-only right now. Before using real USDC, connect
           these buttons to a secure escrow / payout smart contract and test on
-          Base Sepolia first.
+          Base Sepolia first. */}
         </div>
       </div>
     );
