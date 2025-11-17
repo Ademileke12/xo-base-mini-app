@@ -92,6 +92,15 @@ type GameState = {
   playerONickname: string | null;
 };
 
+type Stats = {
+  wins: number;
+  losses: number;
+  draws: number;
+  onlineWins: number;
+  onlineLosses: number;
+  onlineDraws: number;
+};
+
 // --- AI Logic ---
 const checkWinner = (board: Board) => {
   for (let [a, b, c] of WINNING_COMBINATIONS) {
@@ -199,11 +208,13 @@ const initialGameState: GameState = {
 };
 
 // --- Initial Stats and User Data ---
-const initialStats = {
+const initialStats: Stats = {
   wins: 0,
   losses: 0,
   draws: 0,
   onlineWins: 0,
+  onlineLosses: 0,
+  onlineDraws: 0,
 };
 
 const initialUserData: PlayerData = {
@@ -310,7 +321,7 @@ const App = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [message, setMessage] = useState("Welcome to X & O!");
   const [showModal, setShowModal] = useState(false);
-  const [stats, setStats] = useState(initialStats);
+  const [stats, setStats] = useState<Stats>(initialStats);
   const [nicknameInput, setNicknameInput] = useState("");
   const [joinGameIdInput, setJoinGameIdInput] = useState("");
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
@@ -351,13 +362,14 @@ const App = () => {
             data.nickname || `Player_${userWallet.slice(2, 6).toUpperCase()}`,
           wallet: data.wallet !== undefined ? data.wallet : 100,
         }));
-        setStats((prev) => ({
-          ...prev,
+        setStats({
           wins: data.wins || 0,
           losses: data.losses || 0,
           draws: data.draws || 0,
           onlineWins: data.onlineWins || 0,
-        }));
+          onlineLosses: data.onlineLosses || 0,
+          onlineDraws: data.onlineDraws || 0,
+        });
       } else {
         const newUserData = {
           nickname: `Player_${userWallet.slice(2, 6).toUpperCase()}`,
@@ -494,7 +506,6 @@ const App = () => {
       if (docSnap.exists()) {
         const data = docSnap.data() as Partial<GameState>;
         setGameState((prev) => {
-          // Only update if the game state is newer
           if (
             typeof data.lastUpdated === "number" &&
             data.lastUpdated > prev.lastUpdated
@@ -504,7 +515,6 @@ const App = () => {
               ...data,
             };
 
-            // Set message and check for local player's symbol after update
             const winner = checkWinner(newState.board);
             if (newState.isGameOver) {
               setMessage(
@@ -580,15 +590,30 @@ const App = () => {
         const data = userDoc.data() as any;
         const update: any = { lastGame: Date.now() };
 
+        // Overall stats (all modes)
         if (result === "win") {
           update.wins = (data.wins || 0) + 1;
           update.wallet = (data.wallet || 0) + (isOnline ? 5 : 1);
-          if (isOnline) update.onlineWins = (data.onlineWins || 0) + 1;
         } else if (result === "loss") {
           update.losses = (data.losses || 0) + 1;
           update.wallet = Math.max(0, (data.wallet || 0) - (isOnline ? 3 : 0));
         } else {
           update.draws = (data.draws || 0) + 1;
+        }
+
+        // Online-only stats
+        if (isOnline) {
+          const onlineWins = data.onlineWins || 0;
+          const onlineLosses = data.onlineLosses || 0;
+          const onlineDraws = data.onlineDraws || 0;
+
+          if (result === "win") {
+            update.onlineWins = onlineWins + 1;
+          } else if (result === "loss") {
+            update.onlineLosses = onlineLosses + 1;
+          } else {
+            update.onlineDraws = onlineDraws + 1;
+          }
         }
 
         transaction.update(userDocRef, update);
@@ -666,7 +691,6 @@ const App = () => {
           ...(result as any),
           lastUpdated: Date.now(),
         };
-        // Explicitly set nicknames in the online game document for display
         if (symbol === "X") updateData.playerXNickname = userData.nickname;
         if (symbol === "O") updateData.playerONickname = userData.nickname;
 
@@ -691,7 +715,6 @@ const App = () => {
     setShowModal(false);
     setIsThinking(false);
     if (newMode === "online" && onlineGameId) {
-      // Online restart logic
       if (localPlayerSymbol === "X" && db) {
         const gameDocRef = doc(db, "games", onlineGameId);
         setDoc(gameDocRef, initialGameState, { merge: true });
@@ -712,13 +735,8 @@ const App = () => {
       const fetchLeaderboard = async () => {
         try {
           const usersRef = collection(db, "users");
-          // Order by online wins, then local wins, limit to 50
-          const q = query(
-            usersRef,
-            orderBy("onlineWins", "desc"),
-            orderBy("wins", "desc"),
-            limit(50)
-          );
+          // ✅ Only order by onlineWins (no composite index needed)
+          const q = query(usersRef, orderBy("onlineWins", "desc"), limit(50));
           const querySnapshot = await getDocs(q);
           const topUsers = querySnapshot.docs.map((doc) => ({
             id: doc.id,
@@ -769,46 +787,58 @@ const App = () => {
     </div>
   );
 
-  const HeaderBar = () => (
-    <div className="w-full max-w-md flex justify-between items-center p-3 bg-gray-800 rounded-xl shadow-lg mb-4 text-white">
-      <BaseLogoGlow connected={!!userWallet} />
-      <div className="flex flex-col items-end space-y-1">
-        <div className="flex items-center space-x-2">
-          <User size={18} className="text-indigo-400" />
-          <span className="text-sm font-semibold truncate max-w-[120px]">
-            {userData.nickname}
-          </span>
-        </div>
-        <div className="flex items-center space-x-2">
-          <DollarSign size={18} className="text-green-400" />
-          <span className="text-sm font-semibold">{userData.wallet}</span>
+  const HeaderBar = () => {
+    const totalGames = stats.wins + stats.losses + stats.draws;
+    return (
+      <div className="w-full max-w-md flex justify-between items-center p-3 bg-gray-800 rounded-xl shadow-lg mb-4 text-white">
+        <BaseLogoGlow connected={!!userWallet} />
+        <div className="flex flex-col items-end space-y-1">
+          <div className="flex items-center space-x-2">
+            <User size={18} className="text-indigo-400" />
+            <span className="text-sm font-semibold truncate max-w-[120px]">
+              {userData.nickname}
+            </span>
+          </div>
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-1">
+              <DollarSign size={16} className="text-green-400" />
+              <span className="text-sm font-semibold">{userData.wallet}</span>
+            </div>
+            <span className="text-[11px] text-gray-300">
+              {totalGames} total games
+            </span>
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const RenderOnlineSetup = () => (
-    <div className="w-full flex flex-col items-center bg-green-700 p-4 rounded-xl shadow-lg text-white space-y-3">
-      <TrendingUp className="mb-2" />
+    <div className="w-full flex flex-col items-center bg-gradient-to-br from-emerald-700 to-emerald-800 p-4 rounded-xl shadow-lg text-white space-y-3 border border-emerald-500/40">
+      <TrendingUp className="mb-1" />
       <h3 className="text-xl font-semibold">Online Multiplayer</h3>
       {!isConnected || !userWallet ? (
-        <p className="text-yellow-300">
-          Connect your Base wallet to play online.
+        <p className="text-yellow-300 text-sm text-center">
+          Connect your Base wallet to play online ranked games.
         </p>
       ) : onlineGameId ? (
         <div className="w-full text-center">
           <p className="text-sm font-bold mb-2">
-            In Game: {onlineGameId} ({localPlayerSymbol})
+            In Game:{" "}
+            <span className="font-mono bg-black/30 px-2 py-1 rounded">
+              {onlineGameId}
+            </span>{" "}
+            ({localPlayerSymbol})
           </p>
           <button
             onClick={() => setMode("online")}
-            className="w-full p-3 bg-green-500 rounded-lg hover:bg-green-600 font-semibold"
+            className="w-full p-3 bg-emerald-500 rounded-lg hover:bg-emerald-400 font-semibold"
           >
             Go To Game
           </button>
           <button
             onClick={leaveOnlineGame}
-            className="mt-2 text-red-300 hover:text-red-400 underline text-sm"
+            className="mt-2 text-red-200 hover:text-red-300 underline text-xs"
           >
             Leave Game
           </button>
@@ -817,9 +847,9 @@ const App = () => {
         <>
           <button
             onClick={createOnlineGame}
-            className="w-full p-3 bg-green-800 rounded-lg hover:bg-green-900 font-semibold"
+            className="w-full p-3 bg-emerald-900 rounded-lg hover:bg-emerald-700 font-semibold"
           >
-            Create Game (Be X)
+            Create Ranked Game (Be X)
           </button>
           <input
             type="text"
@@ -834,11 +864,11 @@ const App = () => {
             disabled={joinGameIdInput.length < 4}
             className={`w-full p-3 rounded-lg font-semibold transition ${
               joinGameIdInput.length < 4
-                ? "bg-green-500/50 cursor-not-allowed"
-                : "bg-green-500 hover:bg-green-600"
+                ? "bg-emerald-500/50 cursor-not-allowed"
+                : "bg-emerald-500 hover:bg-emerald-400"
             }`}
           >
-            Join Game (Be O)
+            Join Ranked Game (Be O)
           </button>
         </>
       )}
@@ -847,7 +877,7 @@ const App = () => {
 
   const RenderSelection = () => (
     <div className="flex flex-col items-center w-full max-w-sm space-y-4">
-      <h2 className="text-3xl font-bold text-white mb-4">Choose Game Mode</h2>
+      <h2 className="text-3xl font-bold text-white mb-2">Choose Game Mode</h2>
       <button
         onClick={() => {
           setMode("local");
@@ -871,7 +901,7 @@ const App = () => {
             }}
             className={`py-2 px-4 rounded-full font-semibold transition ${
               aiDifficulty === "medium"
-                ? "bg-purple-800"
+                ? "bg-purple-900"
                 : "bg-purple-500 hover:bg-purple-600"
             }`}
           >
@@ -885,7 +915,7 @@ const App = () => {
             }}
             className={`py-2 px-4 rounded-full font-semibold transition ${
               aiDifficulty === "hard"
-                ? "bg-purple-800"
+                ? "bg-purple-900"
                 : "bg-purple-500 hover:bg-purple-600"
             }`}
           >
@@ -898,119 +928,202 @@ const App = () => {
     </div>
   );
 
-  const RenderSettings = () => (
-    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-800 rounded-xl text-white space-y-4">
-      <h2 className="text-2xl font-bold">User Profile</h2>
-      <div className="w-full">
-        <label htmlFor="nickname" className="text-sm block mb-1">
-          Nickname:
-        </label>
-        <div className="flex space-x-2">
-          <input
-            id="nickname"
-            type="text"
-            value={nicknameInput}
-            onChange={(e) => setNicknameInput(e.target.value)}
-            className="flex-grow p-2 rounded text-gray-900"
-            maxLength={15}
-          />
-          <button
-            onClick={updateNickname}
-            disabled={!nicknameInput.trim()}
-            className={`p-2 rounded font-semibold transition ${
-              !nicknameInput.trim()
-                ? "bg-indigo-400/50"
-                : "bg-indigo-600 hover:bg-indigo-700"
-            }`}
-          >
-            Save
-          </button>
-        </div>
-      </div>
-      <div className="w-full p-3 bg-gray-700 rounded-lg flex justify-between items-center">
-        <span className="font-semibold">Wallet balance:</span>
-        <span className="flex items-center">
-          <DollarSign size={16} className="text-green-400 mr-1" />
-          {userData.wallet}
-        </span>
-      </div>
-      {userWallet && (
-        <div className="w-full p-3 bg-gray-700 rounded-lg text-xs break-all text-gray-300">
-          Wallet address: {userWallet}
-        </div>
-      )}
-      <button
-        onClick={() => setMode("selection")}
-        className="mt-2 w-full bg-red-600 p-3 rounded-lg hover:bg-red-700"
-      >
-        Back to Menu
-      </button>
-    </div>
-  );
+  const RenderSettings = () => {
+    const totalGames = stats.wins + stats.losses + stats.draws;
+    const totalOnlineGames =
+      stats.onlineWins + stats.onlineLosses + stats.onlineDraws;
+    const onlineWinRate =
+      totalOnlineGames > 0
+        ? Math.round((stats.onlineWins / totalOnlineGames) * 100)
+        : 0;
 
-  const StatsPage = () => (
-    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-800 rounded-xl text-white space-y-3">
-      <h2 className="text-2xl font-bold mb-2">Your Stats</h2>
-      <div className="w-full flex justify-between p-2 bg-gray-700 rounded-lg">
-        <span>Wins (vs AI/Local):</span>
-        <span className="font-semibold">{stats.wins}</span>
+    return (
+      <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-800 rounded-xl text-white space-y-4">
+        <h2 className="text-2xl font-bold">Profile</h2>
+
+        {/* Nickname + wallet */}
+        <div className="w-full">
+          <label htmlFor="nickname" className="text-sm block mb-1">
+            Nickname:
+          </label>
+          <div className="flex space-x-2">
+            <input
+              id="nickname"
+              type="text"
+              value={nicknameInput}
+              onChange={(e) => setNicknameInput(e.target.value)}
+              className="flex-grow p-2 rounded text-gray-900"
+              maxLength={15}
+            />
+            <button
+              onClick={updateNickname}
+              disabled={!nicknameInput.trim()}
+              className={`p-2 rounded font-semibold transition ${
+                !nicknameInput.trim()
+                  ? "bg-indigo-400/50"
+                  : "bg-indigo-600 hover:bg-indigo-700"
+              }`}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+
+        <div className="w-full p-3 bg-gray-700 rounded-lg flex justify-between items-center">
+          <span className="font-semibold">Wallet balance:</span>
+          <span className="flex items-center">
+            <DollarSign size={16} className="text-green-400 mr-1" />
+            {userData.wallet}
+          </span>
+        </div>
+
+        {userWallet && (
+          <div className="w-full p-3 bg-gray-700 rounded-lg text-xs break-all text-gray-300">
+            Wallet address: {userWallet}
+          </div>
+        )}
+
+        {/* Stats card */}
+        <div className="w-full mt-2 p-4 rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-600/60 shadow-inner space-y-3">
+          <h3 className="text-lg font-semibold mb-1 flex items-center">
+            <BarChart size={18} className="mr-2 text-sky-400" />
+            Game Stats
+          </h3>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div className="bg-slate-900/60 rounded-lg p-2 flex flex-col">
+              <span className="text-xs text-gray-400">Games Played</span>
+              <span className="text-lg font-bold">{totalGames}</span>
+            </div>
+            <div className="bg-slate-900/60 rounded-lg p-2 flex flex-col">
+              <span className="text-xs text-gray-400">Online Games</span>
+              <span className="text-lg font-bold">{totalOnlineGames}</span>
+            </div>
+            <div className="bg-slate-900/60 rounded-lg p-2 flex flex-col">
+              <span className="text-xs text-gray-400">Online Wins</span>
+              <span className="text-lg font-bold text-emerald-400">
+                {stats.onlineWins}
+              </span>
+            </div>
+            <div className="bg-slate-900/60 rounded-lg p-2 flex flex-col">
+              <span className="text-xs text-gray-400">Online Win Rate</span>
+              <span className="text-lg font-bold">
+                {onlineWinRate}
+                <span className="text-xs ml-1">%</span>
+              </span>
+            </div>
+            <div className="bg-slate-900/60 rounded-lg p-2 flex flex-col">
+              <span className="text-xs text-gray-400">Draws</span>
+              <span className="text-lg font-bold text-yellow-300">
+                {stats.draws}
+              </span>
+            </div>
+            <div className="bg-slate-900/60 rounded-lg p-2 flex flex-col">
+              <span className="text-xs text-gray-400">Losses</span>
+              <span className="text-lg font-bold text-red-400">
+                {stats.losses}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <button
+          onClick={() => setMode("selection")}
+          className="mt-2 w-full bg-red-600 p-3 rounded-lg hover:bg-red-700"
+        >
+          Back to Menu
+        </button>
       </div>
-      <div className="w-full flex justify-between p-2 bg-gray-700 rounded-lg">
-        <span>Losses (vs AI/Local):</span>
-        <span className="font-semibold">{stats.losses}</span>
-      </div>
-      <div className="w-full flex justify-between p-2 bg-gray-700 rounded-lg">
-        <span>Draws (vs AI/Local):</span>
-        <span className="font-semibold">{stats.draws}</span>
-      </div>
-      <div className="w-full flex justify-between p-2 bg-green-800 rounded-lg">
-        <span>Online Wins:</span>
-        <span className="font-bold text-lg">{stats.onlineWins}</span>
-      </div>
-      <button
-        onClick={() => setMode("selection")}
-        className="mt-2 w-full bg-indigo-600 p-3 rounded-lg hover:bg-indigo-700"
-      >
-        Back
-      </button>
-    </div>
-  );
+    );
+  };
 
   const LeaderboardPage = () => (
-    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-800 rounded-xl text-white space-y-3">
-      <h2 className="text-2xl font-bold mb-2 flex items-center">
-        <BarChart className="mr-2" /> Top 50 Wins (Online)
-      </h2>
+    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-900 rounded-xl text-white space-y-4 border border-slate-700/70 shadow-inner">
+      <div className="w-full flex flex-col items-center mb-1">
+        <h2 className="text-2xl font-bold flex items-center">
+          <BarChart className="mr-2 text-sky-400" /> Online Leaderboard
+        </h2>
+        <p className="text-xs text-gray-400 mt-1">
+          Top 50 ranked by online wins
+        </p>
+      </div>
+
       {leaderboard.length === 0 ? (
         <div className="flex items-center justify-center p-4">
           <Loader2 className="animate-spin mr-2" /> Loading Leaderboard...
         </div>
       ) : (
-        <div className="w-full space-y-1">
-          <div className="flex justify-between font-bold text-sm border-b pb-1 border-gray-600">
-            <span className="w-1/6">#</span>
-            <span className="w-3/6">Player</span>
-            <span className="w-2/6 text-right">Online Wins</span>
-          </div>
-          {leaderboard.map((user: any, index: number) => (
-            <div
-              key={user.id}
-              className={`flex justify-between p-2 rounded-lg ${
-                user.id === userWallet
-                  ? "bg-yellow-800/50 font-bold"
-                  : "bg-gray-700"
-              }`}
-            >
-              <span className="w-1/6">{index + 1}</span>
-              <span className="w-3/6 truncate">{user.nickname || "Anon"}</span>
-              <span className="w-2/6 text-right">{user.onlineWins || 0}</span>
-            </div>
-          ))}
+        <div className="w-full space-y-2 max-h-[420px] overflow-y-auto pr-1">
+          {leaderboard.map((user: any, index: number) => {
+            const wins = user.onlineWins || 0;
+            const onlineLosses = user.onlineLosses || 0;
+            const onlineDraws = user.onlineDraws || 0;
+            const totalOnline = wins + onlineLosses + onlineDraws;
+            const winRate =
+              totalOnline > 0 ? Math.round((wins / totalOnline) * 100) : 0;
+
+            const isSelf = user.id === userWallet;
+
+            return (
+              <div
+                key={user.id}
+                className={`flex items-center gap-3 p-3 rounded-xl border ${
+                  isSelf
+                    ? "border-yellow-400/70 bg-yellow-500/10"
+                    : "border-slate-700 bg-slate-900/70"
+                } shadow-sm`}
+              >
+                {/* Rank badge */}
+                <div
+                  className={`h-9 w-9 rounded-full flex items-center justify-center text-sm font-bold ${
+                    index === 0
+                      ? "bg-yellow-400 text-black"
+                      : index === 1
+                      ? "bg-gray-300 text-black"
+                      : index === 2
+                      ? "bg-amber-700 text-white"
+                      : "bg-slate-800 text-slate-100"
+                  }`}
+                >
+                  {index + 1}
+                </div>
+
+                {/* Player & stats */}
+                <div className="flex-1">
+                  <div className="flex justify-between items-center">
+                    <span className="font-semibold truncate max-w-[120px]">
+                      {user.nickname || "Anon"}
+                      {isSelf && (
+                        <span className="ml-1 text-[10px] text-yellow-300">
+                          (You)
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-xs text-gray-300">
+                      {totalOnline} games
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs mt-1">
+                    <span className="text-emerald-300 font-semibold">
+                      {wins} online wins
+                    </span>
+                    <span className="text-gray-400">{winRate}% win rate</span>
+                  </div>
+                  {/* Progress bar */}
+                  <div className="mt-1 h-2 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-emerald-500"
+                      style={{ width: `${Math.min(winRate, 100)}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
       <button
         onClick={() => setMode("selection")}
-        className="mt-2 w-full bg-indigo-600 p-3 rounded-lg hover:bg-indigo-700"
+        className="mt-1 w-full bg-indigo-600 p-3 rounded-lg hover:bg-indigo-700 text-sm font-semibold"
       >
         Back
       </button>
@@ -1171,7 +1284,7 @@ const App = () => {
 
   // --- Main Game UI (wallet connected) ---
   return (
-    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center p-4 sm:p-6 pb-20 font-inter relative">
+    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center p-4 sm:p-6 pb-24 font-inter relative">
       <h1 className="text-4xl font-extrabold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-600">
         X & O
       </h1>
