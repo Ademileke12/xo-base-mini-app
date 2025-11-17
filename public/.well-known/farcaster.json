@@ -9,7 +9,7 @@
   },
   "miniapp": {
     "version": "1",
-    "name": "X & O",
+    "name": "X and O",
     "homeUrl": "https://xo-base-mini-appv1.vercel.app",
     "iconUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
     "splashImageUrl": "https://i.postimg.cc/wTW0YVP5/X-O.png",
