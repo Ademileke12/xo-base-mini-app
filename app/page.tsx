@@ -13,6 +13,7 @@ import {
   User,
   DollarSign,
   Loader2,
+  Trophy,
 } from "lucide-react";
 import { initializeApp } from "firebase/app";
 import {
@@ -219,7 +220,7 @@ const initialStats: Stats = {
 
 const initialUserData: PlayerData = {
   nickname: "Guest",
-  wallet: 100, // Initial wallet balance
+  wallet: 100,
   walletAddress: null,
 };
 
@@ -301,16 +302,19 @@ const usePopup = () => {
 // --- Main App Component ---
 const App = () => {
   const { showPopup, PopupContainer } = usePopup();
-
-  // wagmi account from MiniKit / OnchainKit
   const { address, isConnected } = useAccount();
 
-  // User + wallet
   const [userData, setUserData] = useState<PlayerData>(initialUserData);
 
-  // Game state
   const [mode, setMode] = useState<
-    "selection" | "local" | "ai" | "online" | "stats" | "leaderboard"
+    | "selection"
+    | "local"
+    | "ai"
+    | "online"
+    | "stats"
+    | "leaderboard"
+    | "tournament"
+    | "wager"
   >("selection");
   const [onlineGameId, setOnlineGameId] = useState<string | null>(null);
   const [localPlayerSymbol, setLocalPlayerSymbol] = useState<Symbol | null>(
@@ -326,9 +330,15 @@ const App = () => {
   const [joinGameIdInput, setJoinGameIdInput] = useState("");
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
 
-  const currentPlayerSymbol: Symbol = gameState.isXNext ? "X" : "O";
+  // 1v1 Wager UI state (UI ONLY – no real USDC transfer)
+  const [stakeAmount, setStakeAmount] = useState<string>("");
+  const [wagerMode, setWagerMode] = useState<"create" | "join">("create");
+  const [wagerMatchCode, setWagerMatchCode] = useState("");
+  const [generatedWagerCode, setGeneratedWagerCode] = useState<string | null>(
+    null
+  );
 
-  // Canonical "user id" = wallet address now (from wagmi)
+  const currentPlayerSymbol: Symbol = gameState.isXNext ? "X" : "O";
   const userWallet = address?.toLowerCase() ?? null;
 
   const isLocalTurn = useMemo(() => {
@@ -339,7 +349,6 @@ const App = () => {
     );
   }, [mode, currentPlayerSymbol, localPlayerSymbol]);
 
-  // Keep nickname input in sync with loaded user nickname (first time)
   useEffect(() => {
     if (userData.nickname && !nicknameInput) {
       setNicknameInput(userData.nickname);
@@ -401,14 +410,14 @@ const App = () => {
     }
   };
 
-  // --- Online Game Functions (wallet-based) ---
+  // --- Online Game Functions ---
   const createOnlineGame = async () => {
     if (!userWallet || !db) {
       showPopup("Connect your Base wallet first.", "error");
       return;
     }
     try {
-      const gameId = Math.random().toString(36).substring(2, 10).toUpperCase(); // 8 char ID
+      const gameId = Math.random().toString(36).substring(2, 10).toUpperCase();
       const gameDocRef = doc(db, "games", gameId);
       const initial: GameState = {
         ...initialGameState,
@@ -590,7 +599,6 @@ const App = () => {
         const data = userDoc.data() as any;
         const update: any = { lastGame: Date.now() };
 
-        // Overall stats (all modes)
         if (result === "win") {
           update.wins = (data.wins || 0) + 1;
           update.wallet = (data.wallet || 0) + (isOnline ? 5 : 1);
@@ -601,7 +609,6 @@ const App = () => {
           update.draws = (data.draws || 0) + 1;
         }
 
-        // Online-only stats
         if (isOnline) {
           const onlineWins = data.onlineWins || 0;
           const onlineLosses = data.onlineLosses || 0;
@@ -729,13 +736,12 @@ const App = () => {
     }
   };
 
-  // --- Leaderboard Fetch (wallet-based users collection) ---
+  // --- Leaderboard Fetch ---
   useEffect(() => {
     if (mode === "leaderboard" && db) {
       const fetchLeaderboard = async () => {
         try {
           const usersRef = collection(db, "users");
-          // ✅ Only order by onlineWins (no composite index needed)
           const q = query(usersRef, orderBy("onlineWins", "desc"), limit(50));
           const querySnapshot = await getDocs(q);
           const topUsers = querySnapshot.docs.map((doc) => ({
@@ -751,6 +757,52 @@ const App = () => {
       fetchLeaderboard();
     }
   }, [mode, showPopup]);
+
+  // --- 1v1 Wager Handlers (UI only – NO REAL USDC TRANSFER) ---
+  const handleCreateWagerLobby = () => {
+    if (!stakeAmount || Number(stakeAmount) <= 0) {
+      showPopup("Enter a valid stake amount in USDC.", "error");
+      return;
+    }
+    if (!userWallet) {
+      showPopup("Connect your Base wallet first.", "error");
+      return;
+    }
+
+    const code = "XO" + Math.random().toString(36).substring(2, 8).toUpperCase();
+    setGeneratedWagerCode(code);
+
+    // IMPORTANT:
+    // This is UI-only. No USDC actually moves.
+    // You would integrate your own escrow / payout smart contract here.
+    showPopup(
+      `Prototype only: created 1v1 code ${code}. Wire this to your USDC escrow contract before using with real funds.`,
+      "info"
+    );
+  };
+
+  const handleJoinWagerLobby = () => {
+    if (!wagerMatchCode.trim()) {
+      showPopup("Enter a valid 1v1 match code.", "error");
+      return;
+    }
+    if (!stakeAmount || Number(stakeAmount) <= 0) {
+      showPopup("Enter the agreed stake amount in USDC.", "error");
+      return;
+    }
+    if (!userWallet) {
+      showPopup("Connect your Base wallet first.", "error");
+      return;
+    }
+
+    // IMPORTANT:
+    // This is UI-only. No USDC actually moves.
+    // Here you would verify match code + lock stakes via your contract.
+    showPopup(
+      `Prototype only: would join 1v1 match ${wagerMatchCode}. Connect this to your escrow contract logic.`,
+      "info"
+    );
+  };
 
   // --- UI Components ---
   const Cell = ({
@@ -941,7 +993,6 @@ const App = () => {
       <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-800 rounded-xl text-white space-y-4">
         <h2 className="text-2xl font-bold">Profile</h2>
 
-        {/* Nickname + wallet */}
         <div className="w-full">
           <label htmlFor="nickname" className="text-sm block mb-1">
             Nickname:
@@ -983,7 +1034,6 @@ const App = () => {
           </div>
         )}
 
-        {/* Stats card */}
         <div className="w-full mt-2 p-4 rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-600/60 shadow-inner space-y-3">
           <h3 className="text-lg font-semibold mb-1 flex items-center">
             <BarChart size={18} className="mr-2 text-sky-400" />
@@ -1072,7 +1122,6 @@ const App = () => {
                     : "border-slate-700 bg-slate-900/70"
                 } shadow-sm`}
               >
-                {/* Rank badge */}
                 <div
                   className={`h-9 w-9 rounded-full flex items-center justify-center text-sm font-bold ${
                     index === 0
@@ -1087,7 +1136,6 @@ const App = () => {
                   {index + 1}
                 </div>
 
-                {/* Player & stats */}
                 <div className="flex-1">
                   <div className="flex justify-between items-center">
                     <span className="font-semibold truncate max-w-[120px]">
@@ -1108,7 +1156,6 @@ const App = () => {
                     </span>
                     <span className="text-gray-400">{winRate}% win rate</span>
                   </div>
-                  {/* Progress bar */}
                   <div className="mt-1 h-2 rounded-full bg-slate-800 overflow-hidden">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-emerald-500"
@@ -1129,6 +1176,215 @@ const App = () => {
       </button>
     </div>
   );
+
+  // --- Tournament Page ---
+  const TournamentPage = () => (
+    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gradient-to-br from-slate-900 via-gray-900 to-slate-950 rounded-xl text-white space-y-5 border border-slate-700/70 shadow-2xl">
+      <div className="flex flex-col items-center space-y-2">
+        <div className="h-12 w-12 rounded-full bg-yellow-400/10 border border-yellow-400/60 flex items-center justify-center shadow-glow">
+          <Trophy className="text-yellow-300" size={26} />
+        </div>
+        <h2 className="text-xl font-extrabold tracking-wide text-center">
+          Tournament Arena
+        </h2>
+        <p className="text-xs text-gray-300 text-center max-w-xs">
+          Compete with the best X &amp; O players on Base in special seasonal
+          events.
+        </p>
+      </div>
+
+      <div className="w-full rounded-2xl bg-gradient-to-br from-indigo-700 via-purple-700 to-slate-900 border border-indigo-400/60 shadow-inner p-5 space-y-4">
+        <p className="text-[11px] uppercase tracking-[0.2em] text-indigo-200 mb-1">
+          Featured Tournament
+        </p>
+        <h3 className="text-2xl font-black leading-snug">
+          Are you a{" "}
+          <span className="text-yellow-300 drop-shadow-[0_0_6px_rgba(250,204,21,0.7)]">
+            god
+          </span>{" "}
+          of X &amp; O?
+        </h3>
+        <p className="text-xs text-indigo-100/90">
+          A high-stakes onchain showdown for the sharpest tic-tac-toe minds.
+          Climb the bracket, flex your wallet, and claim eternal bragging
+          rights.
+        </p>
+
+        <div className="flex flex-col items-center space-y-2 pt-2">
+          <button
+            disabled
+            className="w-full py-3 rounded-full bg-slate-500/30 border border-slate-400/50 text-xs font-semibold uppercase tracking-[0.18em] text-slate-200 cursor-not-allowed flex items-center justify-center"
+          >
+            Register
+            <span className="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-200">
+              Locked
+            </span>
+          </button>
+          <span className="text-[11px] font-medium text-yellow-200/90 tracking-[0.25em] uppercase">
+            Coming Soon
+          </span>
+          <p className="text-[10px] text-indigo-100/70 text-center">
+            Follow the X &amp; O Mini App on Base to be the first to know when
+            registrations open.
+          </p>
+        </div>
+      </div>
+
+      <div className="text-[10px] text-gray-400 text-center max-w-xs">
+        Tournament stats and rewards will hook into your existing wallet-based
+        profile and leaderboard rank.
+      </div>
+    </div>
+  );
+
+  // --- 1v1 Wager Page (UI only – no real USDC transfer) ---
+  const WagerPage = () => {
+    const parsedStake = Number(stakeAmount) || 0;
+    const potentialWinnings = parsedStake > 0 ? parsedStake * 2 : 0;
+
+    return (
+      <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gradient-to-br from-slate-900 via-gray-900 to-slate-950 rounded-xl text-white space-y-5 border border-slate-700/70 shadow-2xl">
+        <div className="flex flex-col items-center space-y-2">
+          <div className="h-12 w-12 rounded-full bg-emerald-400/10 border border-emerald-400/60 flex items-center justify-center shadow-glow">
+            <Users className="text-emerald-300" size={26} />
+          </div>
+          <h2 className="text-xl font-extrabold tracking-wide text-center">
+            1v1 Wager Arena
+          </h2>
+          <p className="text-xs text-gray-300 text-center max-w-xs">
+            Challenge a single opponent, set a Base USDC stake, and let X &amp;
+            O decide who walks away with the pot.
+          </p>
+        </div>
+
+        {/* Toggle create / join */}
+        <div className="w-full flex bg-slate-900/70 rounded-full p-1 border border-slate-600/80">
+          <button
+            onClick={() => setWagerMode("create")}
+            className={`flex-1 py-2 text-xs font-semibold rounded-full transition ${
+              wagerMode === "create"
+                ? "bg-emerald-500 text-black shadow"
+                : "text-gray-300 hover:text-white"
+            }`}
+          >
+            Host 1v1
+          </button>
+          <button
+            onClick={() => setWagerMode("join")}
+            className={`flex-1 py-2 text-xs font-semibold rounded-full transition ${
+              wagerMode === "join"
+                ? "bg-emerald-500 text-black shadow"
+                : "text-gray-300 hover:text-white"
+            }`}
+          >
+            Join 1v1
+          </button>
+        </div>
+
+        {/* Shared stake input */}
+        <div className="w-full rounded-2xl bg-slate-900/70 border border-slate-700/80 p-4 space-y-3">
+          <div className="flex justify-between items-center text-xs text-gray-300 mb-1">
+            <span>Stake amount</span>
+            <span className="flex items-center gap-1 text-emerald-300 font-semibold">
+              <DollarSign size={12} />
+              USDC on Base
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={stakeAmount}
+              onChange={(e) => setStakeAmount(e.target.value)}
+              placeholder="0.00"
+              className="flex-1 p-2 rounded-lg bg-slate-950 border border-slate-700 text-sm text-white placeholder-gray-500 outline-none focus:border-emerald-400"
+            />
+            <button
+              type="button"
+              onClick={() => setStakeAmount("1")}
+              className="text-[11px] px-2 py-1 rounded-full bg-slate-800 text-gray-200 border border-slate-600 hover:border-emerald-400"
+            >
+              1 USDC
+            </button>
+          </div>
+
+          <div className="flex justify-between items-center text-[11px] text-gray-400 pt-1">
+            <span>Winner takes:</span>
+            <span className="text-emerald-300 font-semibold">
+              {potentialWinnings.toFixed(2)} USDC
+            </span>
+          </div>
+        </div>
+
+        {/* Create or Join UI */}
+        {wagerMode === "create" ? (
+          <div className="w-full rounded-2xl bg-gradient-to-br from-emerald-700 via-emerald-800 to-slate-900 border border-emerald-400/60 p-4 space-y-3 shadow-inner">
+            <p className="text-[11px] uppercase tracking-[0.2em] text-emerald-100 mb-1">
+              Create a stake match
+            </p>
+            <p className="text-xs text-emerald-50/90 mb-1">
+              You&apos;ll host the lobby. Share the match code with your
+              opponent so they can lock in the same stake.
+            </p>
+            <button
+              onClick={handleCreateWagerLobby}
+              className="w-full py-3 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-xs uppercase tracking-[0.18em] flex items-center justify-center"
+            >
+              Create 1v1 Lobby
+            </button>
+            {generatedWagerCode && (
+              <div className="mt-2 p-2 rounded-lg bg-black/30 border border-emerald-300/40 text-xs flex flex-col items-center">
+                <span className="text-[10px] uppercase tracking-[0.2em] text-emerald-200 mb-1">
+                  Match Code
+                </span>
+                <span className="font-mono text-lg font-bold tracking-[0.2em]">
+                  {generatedWagerCode}
+                </span>
+                <span className="mt-1 text-[10px] text-emerald-100/80 text-center">
+                  Share this with your opponent and start your game in the{" "}
+                  <span className="font-semibold">Online</span> tab.
+                </span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="w-full rounded-2xl bg-gradient-to-br from-slate-800 via-slate-900 to-slate-950 border border-slate-600 p-4 space-y-3 shadow-inner">
+            <p className="text-[11px] uppercase tracking-[0.2em] text-slate-200 mb-1">
+              Join a stake match
+            </p>
+            <p className="text-xs text-slate-100/90 mb-1">
+              Enter the match code your opponent shared. Make sure you both
+              agree on the same stake amount.
+            </p>
+            <input
+              type="text"
+              value={wagerMatchCode}
+              onChange={(e) => setWagerMatchCode(e.target.value.toUpperCase())}
+              placeholder="XOABCDE"
+              maxLength={8}
+              className="w-full p-2 rounded-lg bg-slate-950 border border-slate-700 text-center font-mono text-sm tracking-[0.2em] text-white placeholder-gray-500 outline-none focus:border-emerald-400"
+            />
+            <button
+              onClick={handleJoinWagerLobby}
+              className="w-full py-3 rounded-full bg-slate-200 hover:bg-white text-black font-semibold text-xs uppercase tracking-[0.18em] flex items-center justify-center"
+            >
+              Join 1v1 Lobby
+            </button>
+          </div>
+        )}
+
+        <div className="text-[10px] text-gray-400 text-center max-w-xs">
+          <span className="font-semibold text-emerald-300">
+            Onchain safety note:
+          </span>{" "}
+          This screen is UI-only right now. Before using real USDC, connect
+          these buttons to a secure escrow / payout smart contract and test on
+          Base Sepolia first.
+        </div>
+      </div>
+    );
+  };
 
   const MenuItem = ({
     Icon,
@@ -1152,6 +1408,7 @@ const App = () => {
     </button>
   );
 
+  // --- Footer Menu (with 1v1 & Tournament) ---
   const FooterMenu = () => (
     <div className="fixed bottom-0 left-0 right-0 h-16 bg-white flex justify-around items-center shadow-2xl z-10 border-t-4 border-gray-900">
       <MenuItem
@@ -1162,21 +1419,15 @@ const App = () => {
       />
       <MenuItem
         Icon={Users}
-        label="Local"
-        onClick={() => setMode("local")}
-        active={mode === "local"}
+        label="1v1"
+        onClick={() => setMode("wager")}
+        active={mode === "wager"}
       />
       <MenuItem
-        Icon={Cpu}
-        label="AI"
-        onClick={() => setMode("ai")}
-        active={mode === "ai"}
-      />
-      <MenuItem
-        Icon={TrendingUp}
-        label="Online"
-        onClick={() => setMode("online")}
-        active={mode === "online" || onlineGameId !== null}
+        Icon={Trophy}
+        label="Tournament"
+        onClick={() => setMode("tournament")}
+        active={mode === "tournament"}
       />
       <MenuItem
         Icon={BarChart}
@@ -1233,7 +1484,13 @@ const App = () => {
   }, [showModal, gameState.winner, mode, onlineGameId, leaveOnlineGame]);
 
   const RenderLeaveButton = () => {
-    if (mode === "selection" || mode === "stats" || mode === "leaderboard")
+    if (
+      mode === "selection" ||
+      mode === "stats" ||
+      mode === "leaderboard" ||
+      mode === "tournament" ||
+      mode === "wager"
+    )
       return null;
     return (
       <button
@@ -1248,12 +1505,12 @@ const App = () => {
     );
   };
 
-  // --- HARD GATE: wallet required before game ---
+  // --- Wallet Gate (Base Mini App style) ---
   if (!isConnected || !userWallet) {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4">
         <h1 className="text-4xl font-extrabold mb-6 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-600">
-          X & O
+          X &amp; O
         </h1>
         <BaseLogoGlow connected={false} />
         <p className="mt-4 text-sm text-gray-300 text-center max-w-xs">
@@ -1282,11 +1539,11 @@ const App = () => {
     );
   }
 
-  // --- Main Game UI (wallet connected) ---
+  // --- Main Game UI ---
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center p-4 sm:p-6 pb-24 font-inter relative">
       <h1 className="text-4xl font-extrabold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-600">
-        X & O
+        X &amp; O
       </h1>
 
       {RenderLeaveButton()}
@@ -1296,6 +1553,8 @@ const App = () => {
         {mode === "selection" && <RenderSelection />}
         {mode === "stats" && <RenderSettings />}
         {mode === "leaderboard" && <LeaderboardPage />}
+        {mode === "tournament" && <TournamentPage />}
+        {mode === "wager" && <WagerPage />}
         {(mode === "local" || mode === "ai" || mode === "online") && (
           <>
             <div className="text-center mb-6">
