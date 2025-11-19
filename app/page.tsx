@@ -176,7 +176,6 @@ const findBestMove = (
     return bestMove;
   }
 
-  // Medium: 20% random move
   if (Math.random() < 0.2) {
     return available[Math.floor(Math.random() * available.length)];
   } else {
@@ -228,13 +227,13 @@ const initialUserData: PlayerData = {
 
 // --- Animated X and O ---
 const AnimatedX = () => (
-  <div className="flex justify-center items-center w-full h-full text-8xl font-black text-red-500">
+  <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl font-black text-red-500">
     <span className="animate-in fade-in zoom-in duration-500">X</span>
   </div>
 );
 
 const AnimatedO = () => (
-  <div className="flex justify-center items-center w-full h-full text-8xl font-black text-blue-600">
+  <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl font-black text-blue-500">
     <span className="animate-in fade-in zoom-in duration-500">O</span>
   </div>
 );
@@ -260,7 +259,7 @@ const BaseLogoGlow = ({ connected }: { connected: boolean }) => (
   </div>
 );
 
-// --- Global Popup System Component ---
+// --- Global Popup ---
 type Popup = { id: number; message: string; type: "error" | "info" };
 let nextPopupId = 0;
 
@@ -332,7 +331,7 @@ const App = () => {
   const [joinGameIdInput, setJoinGameIdInput] = useState("");
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
 
-  // 1v1 Wager UI state (UI-only in this version)
+  // 1v1 Wager UI state
   const [stakeAmount, setStakeAmount] = useState<string>("");
   const [wagerMode, setWagerMode] = useState<"create" | "join">("create");
   const [wagerMatchCode, setWagerMatchCode] = useState("");
@@ -357,18 +356,16 @@ const App = () => {
     }
   }, [userData.nickname, nicknameInput]);
 
-  // --- Farcaster Mini App: signal ready to hide splash ---
+  // Farcaster ready
   useEffect(() => {
     try {
-      // Inside Farcaster Mini App, this tells the client "UI is ready"
       miniappSdk.actions.ready();
     } catch (e) {
-      // In normal browser / non-miniapp context, this can fail – ignore it
       console.log("Farcaster miniapp ready() not available, ignoring.");
     }
   }, []);
 
-  // --- Wallet-based User Data Listener (Firestore) ---
+  // Wallet-based user data
   useEffect(() => {
     if (!db || !userWallet) return;
 
@@ -408,7 +405,6 @@ const App = () => {
     return () => unsubscribeUser();
   }, [userWallet]);
 
-  // --- User Profile Update (nickname) ---
   const updateNickname = async () => {
     if (!userWallet || !db || !nicknameInput.trim()) return;
     try {
@@ -423,7 +419,7 @@ const App = () => {
     }
   };
 
-  // --- Online Game Functions ---
+  // --- Online Game Functions (wallet-based, RANDOM X/O) ---
   const createOnlineGame = async () => {
     if (!userWallet || !db) {
       showPopup("Connect your Base wallet first.", "error");
@@ -432,20 +428,30 @@ const App = () => {
     try {
       const gameId = Math.random().toString(36).substring(2, 10).toUpperCase();
       const gameDocRef = doc(db, "games", gameId);
-      const initial: GameState = {
+
+      // host creates game; actual X/O assignment happens when second player joins
+      const initial: GameState & {
+        hostWallet: string | null;
+        hostNickname: string | null;
+      } = {
         ...initialGameState,
         gameMode: "online",
-        playerX: userWallet,
+        playerX: null,
         playerO: null,
         lastUpdated: Date.now(),
-        playerXNickname: userData.nickname,
+        playerXNickname: null,
         playerONickname: null,
+        hostWallet: userWallet,
+        hostNickname: userData.nickname,
       };
+
       await setDoc(gameDocRef, initial);
       setOnlineGameId(gameId);
-      setLocalPlayerSymbol("X");
+      setLocalPlayerSymbol(null);
       setMode("online");
-      setMessage(`Game ${gameId} created. You are X. Waiting for O...`);
+      setMessage(
+        `Game ${gameId} created. Waiting for opponent… sides will be random.`
+      );
     } catch (e: any) {
       console.error(e);
       showPopup(`Failed to create game: ${e.message}`, "error");
@@ -457,27 +463,55 @@ const App = () => {
       showPopup("Connect your Base wallet and enter a game ID.", "error");
       return;
     }
+
     const cleanId = gameIdInput.trim().toUpperCase();
+    let assignedSymbol: Symbol | null = null;
+
     try {
       await runTransaction(db, async (transaction: any) => {
         const gameDocRef = doc(db, "games", cleanId);
         const gameDoc = await transaction.get(gameDocRef);
         if (!gameDoc.exists()) throw new Error("Game not found.");
+
         const data = gameDoc.data() as any;
-        if (data.playerO && data.playerX) throw new Error("Room full.");
-        if (data.playerX === userWallet)
-          throw new Error("You are already X in this game.");
+
+        if (data.playerX && data.playerO) throw new Error("Room full.");
+        if (data.hostWallet === userWallet)
+          throw new Error("You already created this game.");
+
+        const hostWallet: string = data.hostWallet;
+        const hostNickname: string =
+          data.hostNickname || `Player_${hostWallet.slice(2, 6).toUpperCase()}`;
+
+        const joinerWallet = userWallet;
+        const joinerNickname = userData.nickname;
+
+        // 🔀 RANDOM decide who is X and who is O
+        const hostIsX = Math.random() < 0.5;
+
+        const playerX = hostIsX ? hostWallet : joinerWallet;
+        const playerO = hostIsX ? joinerWallet : hostWallet;
+
+        const playerXNickname = hostIsX ? hostNickname : joinerNickname;
+        const playerONickname = hostIsX ? joinerNickname : hostNickname;
+
+        assignedSymbol = playerX === joinerWallet ? "X" : "O";
 
         transaction.update(gameDocRef, {
-          playerO: userWallet,
-          playerONickname: userData.nickname,
+          playerX,
+          playerO,
+          playerXNickname,
+          playerONickname,
           lastUpdated: Date.now(),
         });
-        setOnlineGameId(cleanId);
-        setLocalPlayerSymbol("O");
-        setMode("online");
-        setMessage(`Joined Game ${cleanId}. You are O.`);
       });
+
+      setOnlineGameId(cleanId);
+      setLocalPlayerSymbol(assignedSymbol);
+      setMode("online");
+      setMessage(
+        `Joined Game ${cleanId}. You are ${assignedSymbol}. Good luck!`
+      );
     } catch (e: any) {
       console.error(e);
       const msg = e.message.includes("not found")
@@ -526,7 +560,8 @@ const App = () => {
     const gameDocRef = doc(db, "games", onlineGameId);
     const unsubscribe = onSnapshot(gameDocRef, (docSnap) => {
       if (docSnap.exists()) {
-        const data = docSnap.data() as Partial<GameState>;
+        const data = docSnap.data() as any;
+
         setGameState((prev) => {
           if (
             typeof data.lastUpdated === "number" &&
@@ -536,6 +571,15 @@ const App = () => {
               ...prev,
               ...data,
             };
+
+            // update our local symbol if game now has players
+            if (userWallet) {
+              if (newState.playerX === userWallet) {
+                setLocalPlayerSymbol("X");
+              } else if (newState.playerO === userWallet) {
+                setLocalPlayerSymbol("O");
+              }
+            }
 
             const winner = checkWinner(newState.board);
             if (newState.isGameOver) {
@@ -566,10 +610,11 @@ const App = () => {
         showPopup("Game not found or ended.", "error");
       }
     });
-    return () => unsubscribe();
-  }, [mode, onlineGameId]);
 
-  // --- AI Move ---
+    return () => unsubscribe();
+  }, [mode, onlineGameId, userWallet, showPopup]);
+
+  // AI move
   useEffect(() => {
     if (
       mode === "ai" &&
@@ -599,7 +644,7 @@ const App = () => {
     aiDifficulty,
   ]);
 
-  // --- Game Logic ---
+  // Stats update
   const updateStats = useCallback(
     async (result: "win" | "loss" | "draw", isOnline: boolean) => {
       if (!userWallet || !db) return;
@@ -749,7 +794,7 @@ const App = () => {
     }
   };
 
-  // --- Leaderboard Fetch ---
+  // Leaderboard fetch
   useEffect(() => {
     if (mode === "leaderboard" && db) {
       const fetchLeaderboard = async () => {
@@ -771,7 +816,7 @@ const App = () => {
     }
   }, [mode, showPopup]);
 
-  // --- 1v1 Wager Handlers (UI only in this version) ---
+  // 1v1 wager handlers (UI only)
   const handleCreateWagerLobby = () => {
     if (!stakeAmount || Number(stakeAmount) <= 0) {
       showPopup("Enter a valid stake amount in USDC.", "error");
@@ -811,7 +856,7 @@ const App = () => {
     );
   };
 
-  // --- UI Components ---
+  // Board + UI blocks
   const Cell = ({
     value,
     index,
@@ -822,7 +867,7 @@ const App = () => {
     winning: boolean;
   }) => (
     <div
-      className={`cell flex justify-center items-center text-7xl font-black cursor-pointer shadow-inner transition-colors duration-200 ${
+      className={`cell flex justify-center items-center text-7xl font-black cursor-pointer shadow-inner transition-colors duration-200 active:scale-95 ${
         winning
           ? "bg-yellow-400/80 text-gray-900 animate-pulse"
           : "bg-white hover:bg-gray-100"
@@ -849,7 +894,7 @@ const App = () => {
   const HeaderBar = () => {
     const totalGames = stats.wins + stats.losses + stats.draws;
     return (
-      <div className="w-full max-w-md flex justify-between items-center p-3 bg-gray-800 rounded-xl shadow-lg mb-4 text-white">
+      <div className="w-full max-w-md flex justify-between items-center p-3 bg-slate-900/80 rounded-2xl shadow-lg mb-4 text-white border border-slate-700">
         <BaseLogoGlow connected={!!userWallet} />
         <div className="flex flex-col items-end space-y-1">
           <div className="flex items-center space-x-2">
@@ -872,8 +917,75 @@ const App = () => {
     );
   };
 
+  // --- Hero animated X&O card ---
+  const HeroAnimatedXO = () => (
+    <div className="w-full max-w-sm mb-5">
+      <div className="relative rounded-3xl bg-gradient-to-br from-sky-500/20 via-indigo-500/15 to-purple-500/25 border border-sky-500/40 shadow-[0_0_40px_rgba(56,189,248,0.45)] overflow-hidden p-4">
+        <div className="pointer-events-none absolute -top-10 -left-10 h-24 w-24 rounded-full bg-sky-500/40 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-16 right-0 h-32 w-32 rounded-full bg-purple-500/40 blur-3xl" />
+
+        <div className="relative flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.25em] text-sky-200/80">
+                Onchain Duel
+              </p>
+              <h2 className="text-lg font-extrabold text-white">
+                X &amp; O Highlight
+              </h2>
+              <p className="text-[11px] text-slate-100/80 mt-1 max-w-[200px]">
+                Tap a tile, outplay the board, and climb the Base ladder.
+              </p>
+            </div>
+            <div className="h-14 w-14 rounded-2xl bg-black/60 border border-slate-600/60 flex items-center justify-center">
+              <Cpu size={22} className="text-sky-300 animate-pulse" />
+            </div>
+          </div>
+
+          <div className="mt-1 grid grid-cols-3 grid-rows-3 gap-1 rounded-2xl bg-slate-950/70 p-2 border border-slate-700/80">
+            {Array.from({ length: 9 }).map((_, idx) => {
+              const isCenter = idx === 4;
+              const isXSpot = idx === 0 || idx === 8;
+              const isOSpot = idx === 2 || idx === 6;
+
+              return (
+                <div
+                  key={idx}
+                  className={`h-10 w-full rounded-xl bg-slate-900/90 flex items-center justify-center overflow-hidden ${
+                    isCenter ? "border border-sky-500/50" : ""
+                  }`}
+                >
+                  {isXSpot && (
+                    <span className="text-xl font-black text-red-400 animate-bounce">
+                      X
+                    </span>
+                  )}
+                  {isOSpot && (
+                    <span className="text-xl font-black text-blue-400 animate-pulse">
+                      O
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center justify-between text-[11px] text-sky-100/80 mt-1">
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+              Live turns
+            </span>
+            <span className="uppercase tracking-[0.18em] text-sky-200/80">
+              Base Mini App
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
   const RenderOnlineSetup = () => (
-    <div className="w-full flex flex-col items-center bg-gradient-to-br from-emerald-700 to-emerald-800 p-4 rounded-xl shadow-lg text-white space-y-3 border border-emerald-500/40">
+    <div className="w-full flex flex-col items-center bg-gradient-to-br from-emerald-700 to-emerald-800 p-4 rounded-xl shadow-lg text-white space-y-3 border border-emerald-500/40 mt-1">
       <TrendingUp className="mb-1" />
       <h3 className="text-xl font-semibold">Online Multiplayer</h3>
       {!isConnected || !userWallet ? (
@@ -882,12 +994,17 @@ const App = () => {
         </p>
       ) : onlineGameId ? (
         <div className="w-full text-center">
-          <p className="text-sm font-bold mb-2">
+          <p className="text-sm font-bold mb-1">
             In Game:{" "}
             <span className="font-mono bg-black/30 px-2 py-1 rounded">
               {onlineGameId}
-            </span>{" "}
-            ({localPlayerSymbol})
+            </span>
+          </p>
+          <p className="text-xs text-emerald-100 mb-2">
+            Your side:{" "}
+            <span className="font-semibold">
+              {localPlayerSymbol ?? "TBD (random)"}
+            </span>
           </p>
           <button
             onClick={() => setMode("online")}
@@ -908,7 +1025,7 @@ const App = () => {
             onClick={createOnlineGame}
             className="w-full p-3 bg-emerald-900 rounded-lg hover:bg-emerald-700 font-semibold"
           >
-            Create Ranked Game (Be X)
+            Create Ranked Game (Random X/O)
           </button>
           <input
             type="text"
@@ -927,42 +1044,41 @@ const App = () => {
                 : "bg-emerald-500 hover:bg-emerald-400"
             }`}
           >
-            Join Ranked Game (Be O)
+            Join Ranked Game
           </button>
         </>
       )}
     </div>
   );
 
+  // Only Quick AI + Online section on home
   const RenderSelection = () => (
     <div className="flex flex-col items-center w-full max-w-sm space-y-4">
-      <h2 className="text-3xl font-bold text-white mb-2">Choose Game Mode</h2>
-      <button
-        onClick={() => {
-          setMode("local");
-          handleRestart("local");
-        }}
-        className="w-full p-4 bg-indigo-600 text-white rounded-xl shadow-lg hover:bg-indigo-700 flex items-center justify-center"
-      >
-        <Users className="mr-3" /> Local 2-Player
-      </button>
+      <HeroAnimatedXO />
 
-      <div className="flex flex-col w-full space-y-2 p-4 bg-purple-700 rounded-xl shadow-lg">
-        <div className="flex items-center justify-center w-full text-white">
-          <Cpu className="mr-2" /> Play with AI (You are X)
+      <div className="w-full rounded-2xl bg-gradient-to-br from-purple-500/20 to-indigo-900/40 border border-purple-500/40 p-4 shadow-lg">
+        <div className="flex items-center gap-3">
+          <div className="h-9 w-9 rounded-xl bg-black/40 flex items-center justify-center">
+            <Cpu size={20} className="text-white" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold text-white">
+              Quick Match vs AI
+            </h3>
+            <p className="text-[11px] text-slate-200/80">
+              Instant game against a smart bot. Great for warming up your
+              strategy.
+            </p>
+          </div>
         </div>
-        <div className="flex justify-between mt-2">
+        <div className="flex justify-between mt-3">
           <button
             onClick={() => {
               setAiDifficulty("medium");
               setMode("ai");
               handleRestart("ai");
             }}
-            className={`py-2 px-4 rounded-full font-semibold transition ${
-              aiDifficulty === "medium"
-                ? "bg-purple-900"
-                : "bg-purple-500 hover:bg-purple-600"
-            }`}
+            className="py-2 px-4 rounded-full font-semibold text-[11px] bg-purple-900/80 hover:bg-purple-800"
           >
             Medium
           </button>
@@ -972,11 +1088,7 @@ const App = () => {
               setMode("ai");
               handleRestart("ai");
             }}
-            className={`py-2 px-4 rounded-full font-semibold transition ${
-              aiDifficulty === "hard"
-                ? "bg-purple-900"
-                : "bg-purple-500 hover:bg-purple-600"
-            }`}
+            className="py-2 px-4 rounded-full font-semibold text-[11px] bg-purple-500/80 hover:bg-purple-400 text-black"
           >
             Hard
           </button>
@@ -987,6 +1099,7 @@ const App = () => {
     </div>
   );
 
+  // Profile
   const RenderSettings = () => {
     const totalGames = stats.wins + stats.losses + stats.draws;
     const totalOnlineGames =
@@ -997,7 +1110,7 @@ const App = () => {
         : 0;
 
     return (
-      <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-800 rounded-xl text-white space-y-4">
+      <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-900/90 rounded-xl text-white space-y-4 border border-slate-700/80">
         <h2 className="text-2xl font-bold">Profile</h2>
 
         <div className="w-full">
@@ -1027,7 +1140,7 @@ const App = () => {
           </div>
         </div>
 
-        <div className="w-full p-3 bg-gray-700 rounded-lg flex justify-between items-center">
+        <div className="w-full p-3 bg-gray-800 rounded-lg flex justify-between items-center">
           <span className="font-semibold">Wallet balance:</span>
           <span className="flex items-center">
             <DollarSign size={16} className="text-green-400 mr-1" />
@@ -1036,7 +1149,7 @@ const App = () => {
         </div>
 
         {userWallet && (
-          <div className="w-full p-3 bg-gray-700 rounded-lg text-xs break-all text-gray-300">
+          <div className="w-full p-3 bg-gray-800 rounded-lg text-xs break-all text-gray-300">
             Wallet address: {userWallet}
           </div>
         )}
@@ -1093,8 +1206,9 @@ const App = () => {
     );
   };
 
+  // Leaderboard
   const LeaderboardPage = () => (
-    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-900 rounded-xl text-white space-y-4 border border-slate-700/70 shadow-inner">
+    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-900/90 rounded-xl text-white space-y-4 border border-slate-700/70 shadow-inner">
       <div className="w-full flex flex-col items-center mb-1">
         <h2 className="text-2xl font-bold flex items-center">
           <BarChart className="mr-2 text-sky-400" /> Online Leaderboard
@@ -1184,7 +1298,7 @@ const App = () => {
     </div>
   );
 
-  // --- Tournament Page ---
+  // Tournament
   const TournamentPage = () => (
     <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gradient-to-br from-slate-900 via-gray-900 to-slate-950 rounded-xl text-white space-y-5 border border-slate-700/70 shadow-2xl">
       <div className="flex flex-col items-center space-y-2">
@@ -1244,7 +1358,7 @@ const App = () => {
     </div>
   );
 
-  // --- 1v1 Wager Page (UI only – no real USDC transfer yet) ---
+  // 1v1 wager
   const WagerPage = () => {
     const parsedStake = Number(stakeAmount) || 0;
     const potentialWinnings = parsedStake > 0 ? parsedStake * 2 : 0;
@@ -1264,7 +1378,6 @@ const App = () => {
           </p>
         </div>
 
-        {/* Toggle create / join */}
         <div className="w-full flex bg-slate-900/70 rounded-full p-1 border border-slate-600/80">
           <button
             onClick={() => setWagerMode("create")}
@@ -1288,7 +1401,6 @@ const App = () => {
           </button>
         </div>
 
-        {/* Shared stake input */}
         <div className="w-full rounded-2xl bg-slate-900/70 border border-slate-700/80 p-4 space-y-3">
           <div className="flex justify-between items-center text-xs text-gray-300 mb-1">
             <span>Stake amount</span>
@@ -1324,7 +1436,6 @@ const App = () => {
           </div>
         </div>
 
-        {/* Create or Join UI */}
         {wagerMode === "create" ? (
           <div className="w-full rounded-2xl bg-gradient-to-br from-emerald-700 via-emerald-800 to-slate-900 border border-emerald-400/60 p-4 space-y-3 shadow-inner">
             <p className="text-[11px] uppercase tracking-[0.2em] text-emerald-100 mb-1">
@@ -1405,22 +1516,21 @@ const App = () => {
     active: boolean;
   }) => (
     <button
-      className={`flex flex-col items-center text-xs font-medium p-2 transition-colors ${
-        active ? "text-blue-600" : "text-gray-900 hover:text-blue-400"
+      className={`flex flex-col items-center text-[10px] font-medium px-2 py-1 transition-colors ${
+        active ? "text-sky-400" : "text-gray-300 hover:text-sky-300"
       }`}
       onClick={onClick}
     >
       <Icon size={20} />
-      <span>{label}</span>
+      <span className="mt-0.5">{label}</span>
     </button>
   );
 
-  // --- Footer Menu (with 1v1 & Tournament) ---
   const FooterMenu = () => (
-    <div className="fixed bottom-0 left-0 right-0 h-16 bg-white flex justify-around items-center shadow-2xl z-10 border-t-4 border-gray-900">
+    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md h-14 bg-black/70 backdrop-blur-xl border border-slate-700/80 rounded-2xl flex justify-around items-center shadow-[0_10px_30px_rgba(0,0,0,0.6)] z-20">
       <MenuItem
         Icon={Home}
-        label="Menu"
+        label="Home"
         onClick={() => setMode("selection")}
         active={mode === "selection"}
       />
@@ -1438,7 +1548,7 @@ const App = () => {
       />
       <MenuItem
         Icon={BarChart}
-        label="Leaderboard"
+        label="Ranks"
         onClick={() => setMode("leaderboard")}
         active={mode === "leaderboard"}
       />
@@ -1512,14 +1622,50 @@ const App = () => {
     );
   };
 
-  // --- Wallet Gate (Base Mini App style) ---
+  const TopBar = () => {
+    const wins = stats.onlineWins;
+    const rankLabel =
+      wins >= 20
+        ? "Grandmaster"
+        : wins >= 10
+        ? "Master"
+        : wins >= 5
+        ? "Challenger"
+        : wins >= 1
+        ? "Rookie"
+        : "Unranked";
+
+    return (
+      <div className="w-full max-w-lg flex items-center justify-between pt-1 pb-3">
+        <div className="flex items-center gap-2">
+          <div className="h-9 w-9 rounded-2xl bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center text-lg font-black">
+            ❌⭕
+          </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
+              Base Mini Game
+            </p>
+            <h1 className="text-lg font-bold text-white">X &amp; O Arena</h1>
+          </div>
+        </div>
+        <div className="text-right text-xs">
+          <p className="text-slate-400">Rank</p>
+          <p className="text-emerald-400 font-semibold flex items-center gap-1">
+            <Trophy size={14} /> {rankLabel}
+          </p>
+        </div>
+      </div>
+    );
+  };
+
+  // Wallet gate
   if (!isConnected || !userWallet) {
     return (
-      <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4">
-        <h1 className="text-4xl font-extrabold mb-6 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-600">
-          X &amp; O
-        </h1>
-        <BaseLogoGlow connected={false} />
+      <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-white flex flex-col items-center justify-center p-4">
+        <TopBar />
+        <div className="mt-6">
+          <BaseLogoGlow connected={false} />
+        </div>
         <p className="mt-4 text-sm text-gray-300 text-center max-w-xs">
           Connect your{" "}
           <span className="font-semibold text-sky-300">Base wallet</span> to
@@ -1546,13 +1692,10 @@ const App = () => {
     );
   }
 
-  // --- Main Game UI ---
+  // Main UI
   return (
-    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center p-4 sm:p-6 pb-24 font-inter relative">
-      <h1 className="text-4xl font-extrabold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-600">
-        X &amp; O
-      </h1>
-
+    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-white flex flex-col items-center p-4 sm:p-6 pb-24 font-inter relative">
+      <TopBar />
       {RenderLeaveButton()}
       <HeaderBar />
 
@@ -1564,16 +1707,21 @@ const App = () => {
         {mode === "wager" && <WagerPage />}
         {(mode === "local" || mode === "ai" || mode === "online") && (
           <>
-            <div className="text-center mb-6">
-              <p className="text-lg font-semibold">{message}</p>
-              {isThinking && (
-                <p className="text-yellow-400 mt-2 flex items-center justify-center">
-                  <Cpu className="mr-2 animate-pulse" size={16} /> AI is
-                  thinking...
-                </p>
-              )}
+            <div className="mb-4 flex items-center justify-center">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-600">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-xs font-medium text-slate-100">
+                  {message}
+                </span>
+              </div>
             </div>
             <RenderBoard />
+            {isThinking && (
+              <p className="text-yellow-400 mt-3 flex items-center justify-center text-sm">
+                <Cpu className="mr-2 animate-pulse" size={16} /> AI is
+                thinking...
+              </p>
+            )}
             {(mode === "local" || mode === "ai") && !gameState.isGameOver && (
               <button
                 onClick={() => handleRestart(mode as GameMode)}
@@ -1583,7 +1731,7 @@ const App = () => {
               </button>
             )}
             {mode === "online" && (
-              <div className="mt-4 p-3 bg-gray-700 text-white rounded-lg text-sm text-center">
+              <div className="mt-4 p-3 bg-gray-800 text-white rounded-lg text-sm text-center border border-slate-700">
                 <p>
                   Game ID:{" "}
                   <span className="font-mono font-bold">{onlineGameId}</span>
@@ -1597,7 +1745,7 @@ const App = () => {
                         : "text-blue-500"
                     }`}
                   >
-                    {localPlayerSymbol}
+                    {localPlayerSymbol ?? "TBD"}
                   </span>
                 </p>
                 {gameState.playerX && gameState.playerO && (
@@ -1624,7 +1772,7 @@ const App = () => {
       <FooterMenu />
       {Modal}
       <PopupContainer />
-      <div className="absolute bottom-2 right-4 text-xs text-gray-400">
+      <div className="absolute bottom-1 right-4 text-xs text-gray-500">
         Created by anakincoco
       </div>
     </div>
