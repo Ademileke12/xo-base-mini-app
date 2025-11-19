@@ -86,8 +86,8 @@ type GameState = {
   isXNext: boolean;
   winner: Symbol | null;
   winningCombo: number[] | null;
-  playerX: string | null; // wallet address
-  playerO: string | null; // wallet address
+  playerX: string | null;
+  playerO: string | null;
   gameMode: GameMode;
   lastUpdated: number;
   isGameOver: boolean;
@@ -225,16 +225,26 @@ const initialUserData: PlayerData = {
   walletAddress: null,
 };
 
-// --- Animated X and O ---
+// --- Animated X and O (updated styles) ---
 const AnimatedX = () => (
-  <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl font-black text-red-500">
-    <span className="animate-in fade-in zoom-in duration-500">X</span>
+  <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl font-black text-black">
+    <span
+      className="animate-in fade-in zoom-in duration-500"
+      style={{ fontFamily: '"Georgia", "Times New Roman", serif' }}
+    >
+      X
+    </span>
   </div>
 );
 
 const AnimatedO = () => (
   <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl font-black text-blue-500">
-    <span className="animate-in fade-in zoom-in duration-500">O</span>
+    <span
+      className="animate-in fade-in zoom-in duration-500"
+      style={{ fontFamily: '"Georgia", "Times New Roman", serif' }}
+    >
+      O
+    </span>
   </div>
 );
 
@@ -429,7 +439,6 @@ const App = () => {
       const gameId = Math.random().toString(36).substring(2, 10).toUpperCase();
       const gameDocRef = doc(db, "games", gameId);
 
-      // host creates game; actual X/O assignment happens when second player joins
       const initial: GameState & {
         hostWallet: string | null;
         hostNickname: string | null;
@@ -486,7 +495,6 @@ const App = () => {
         const joinerWallet = userWallet;
         const joinerNickname = userData.nickname;
 
-        // 🔀 RANDOM decide who is X and who is O
         const hostIsX = Math.random() < 0.5;
 
         const playerX = hostIsX ? hostWallet : joinerWallet;
@@ -572,7 +580,6 @@ const App = () => {
               ...data,
             };
 
-            // update our local symbol if game now has players
             if (userWallet) {
               if (newState.playerX === userWallet) {
                 setLocalPlayerSymbol("X");
@@ -871,7 +878,7 @@ const App = () => {
         winning
           ? "bg-yellow-400/80 text-gray-900 animate-pulse"
           : "bg-white hover:bg-gray-100"
-      } ${value === "X" ? "text-red-500" : "text-blue-600"}`}
+      } ${value === "X" ? "text-black" : "text-blue-500"}`}
       onClick={() => handleClick(index)}
     >
       {value === "X" ? <AnimatedX /> : value === "O" ? <AnimatedO /> : null}
@@ -1741,7 +1748,7 @@ const App = () => {
                   <span
                     className={`font-bold ${
                       localPlayerSymbol === "X"
-                        ? "text-red-500"
+                        ? "text-black"
                         : "text-blue-500"
                     }`}
                   >
