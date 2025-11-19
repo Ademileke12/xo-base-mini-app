@@ -37,6 +37,8 @@ import {
   WalletDropdownDisconnect,
 } from "@coinbase/onchainkit/wallet";
 
+import miniappSdk from "@farcaster/miniapp-sdk";
+
 // --- Firebase config ---
 const firebaseConfig = {
   apiKey: "AIzaSyDBQPgse6PZn-FQBo8Bv5HF8mNxjXrydl4",
@@ -330,7 +332,7 @@ const App = () => {
   const [joinGameIdInput, setJoinGameIdInput] = useState("");
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
 
-  // 1v1 Wager UI state (UI ONLY – no real USDC transfer)
+  // 1v1 Wager UI state (UI-only in this version)
   const [stakeAmount, setStakeAmount] = useState<string>("");
   const [wagerMode, setWagerMode] = useState<"create" | "join">("create");
   const [wagerMatchCode, setWagerMatchCode] = useState("");
@@ -354,6 +356,17 @@ const App = () => {
       setNicknameInput(userData.nickname);
     }
   }, [userData.nickname, nicknameInput]);
+
+  // --- Farcaster Mini App: signal ready to hide splash ---
+  useEffect(() => {
+    try {
+      // Inside Farcaster Mini App, this tells the client "UI is ready"
+      miniappSdk.actions.ready();
+    } catch (e) {
+      // In normal browser / non-miniapp context, this can fail – ignore it
+      console.log("Farcaster miniapp ready() not available, ignoring.");
+    }
+  }, []);
 
   // --- Wallet-based User Data Listener (Firestore) ---
   useEffect(() => {
@@ -758,7 +771,7 @@ const App = () => {
     }
   }, [mode, showPopup]);
 
-  // --- 1v1 Wager Handlers (UI only – NO REAL USDC TRANSFER) ---
+  // --- 1v1 Wager Handlers (UI only in this version) ---
   const handleCreateWagerLobby = () => {
     if (!stakeAmount || Number(stakeAmount) <= 0) {
       showPopup("Enter a valid stake amount in USDC.", "error");
@@ -772,9 +785,6 @@ const App = () => {
     const code = "XO" + Math.random().toString(36).substring(2, 8).toUpperCase();
     setGeneratedWagerCode(code);
 
-    // IMPORTANT:
-    // This is UI-only. No USDC actually moves.
-    // You would integrate your own escrow / payout smart contract here.
     showPopup(
       `Prototype only: created 1v1 code ${code}. Wire this to your USDC escrow contract before using with real funds.`,
       "info"
@@ -795,9 +805,6 @@ const App = () => {
       return;
     }
 
-    // IMPORTANT:
-    // This is UI-only. No USDC actually moves.
-    // Here you would verify match code + lock stakes via your contract.
     showPopup(
       `Prototype only: would join 1v1 match ${wagerMatchCode}. Connect this to your escrow contract logic.`,
       "info"
@@ -1237,7 +1244,7 @@ const App = () => {
     </div>
   );
 
-  // --- 1v1 Wager Page (UI only – no real USDC transfer) ---
+  // --- 1v1 Wager Page (UI only – no real USDC transfer yet) ---
   const WagerPage = () => {
     const parsedStake = Number(stakeAmount) || 0;
     const potentialWinnings = parsedStake > 0 ? parsedStake * 2 : 0;
@@ -1378,9 +1385,9 @@ const App = () => {
           <span className="font-semibold text-emerald-300">
             Onchain safety note:
           </span>{" "}
-          {/* This screen is UI-only right now. Before using real USDC, connect
+          This screen is UI-only right now. Before using real USDC, connect
           these buttons to a secure escrow / payout smart contract and test on
-          Base Sepolia first. */}
+          Base Sepolia first.
         </div>
       </div>
     );
