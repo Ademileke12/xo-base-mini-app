@@ -85,9 +85,11 @@ type Board = (Symbol | null)[];
 
 type PlayerData = {
   nickname: string;
-  wallet: number;
+  xoPoints: number;
   walletAddress: string | null;
 };
+
+type StakeType = "none" | "points" | "usdc";
 
 type GameState = {
   board: Board;
@@ -103,6 +105,8 @@ type GameState = {
   playerONickname: string | null;
   hostWallet?: string | null;
   hostNickname?: string | null;
+  stakeType?: StakeType;
+  stakeAmountPoints?: number | null;
 };
 
 type Stats = {
@@ -130,6 +134,13 @@ type Match = {
   createdAt: number;
 };
 
+type Badge = {
+  id: string;
+  label: string;
+  emoji: string;
+  description: string;
+};
+
 // --- Rank helper ---
 const getRankLabel = (wins: number) => {
   if (wins >= 20) return "Grandmaster";
@@ -137,6 +148,70 @@ const getRankLabel = (wins: number) => {
   if (wins >= 5) return "Challenger";
   if (wins >= 1) return "Rookie";
   return "Unranked";
+};
+
+// --- Badges helper ---
+const getBadges = (xoPoints: number, stats: Stats): Badge[] => {
+  const badges: Badge[] = [];
+
+  if (xoPoints >= 12000) {
+    badges.push({
+      id: "deity",
+      label: "Onchain Deity",
+      emoji: "👑",
+      description: "Massive XO stack. You rule the grid.",
+    });
+  } else if (xoPoints >= 9000) {
+    badges.push({
+      id: "whale",
+      label: "XO Whale",
+      emoji: "🐋",
+      description: "You’ve stacked a serious XO bag.",
+    });
+  } else if (xoPoints >= 7000) {
+    badges.push({
+      id: "grinder",
+      label: "Grinder",
+      emoji: "🔥",
+      description: "Playing often and stacking XO.",
+    });
+  }
+
+  if (stats.onlineWins >= 20) {
+    badges.push({
+      id: "veteran",
+      label: "Ranked Veteran",
+      emoji: "⚔️",
+      description: "20+ online wins.",
+    });
+  } else if (stats.onlineWins >= 10) {
+    badges.push({
+      id: "fighter",
+      label: "Ranked Fighter",
+      emoji: "🥊",
+      description: "10+ online wins.",
+    });
+  }
+
+  if (stats.bestStreak >= 5) {
+    badges.push({
+      id: "streak",
+      label: "Hot Streak",
+      emoji: "🔥",
+      description: "5+ win streak.",
+    });
+  }
+
+  if (stats.onlineDraws >= 10) {
+    badges.push({
+      id: "wall",
+      label: "Unbreakable",
+      emoji: "🧱",
+      description: "10+ online draws.",
+    });
+  }
+
+  return badges;
 };
 
 // --- AI Logic ---
@@ -242,6 +317,10 @@ const initialGameState: GameState = {
   isGameOver: false,
   playerXNickname: null,
   playerONickname: null,
+  hostWallet: null,
+  hostNickname: null,
+  stakeType: "none",
+  stakeAmountPoints: null,
 };
 
 const initialStats: Stats = {
@@ -257,18 +336,19 @@ const initialStats: Stats = {
 
 const initialUserData: PlayerData = {
   nickname: "Guest",
-  wallet: 100,
+  xoPoints: 6000,
   walletAddress: null,
 };
 
-// --- Animated X and O ---
+// --- Animated X and O (FF Oxmox) ---
 const AnimatedX = () => (
   <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl text-black">
     <span
-      className="animate-in fade-in zoom-in duration-500 drop-shadow-[0_0_6px_rgba(15,23,42,0.8)]"
+      className="duration-300"
       style={{
-        fontFamily: '"Press Start 2P", system-ui, sans-serif',
-        letterSpacing: "0.08em",
+        fontFamily:
+          '"FF Oxmox", system-ui, -apple-system, "Segoe UI", sans-serif',
+        letterSpacing: "0.06em",
       }}
     >
       X
@@ -277,12 +357,13 @@ const AnimatedX = () => (
 );
 
 const AnimatedO = () => (
-  <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl text-sky-400">
+  <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl text-sky-500">
     <span
-      className="animate-in fade-in zoom-in duration-500 drop-shadow-[0_0_8px_rgba(56,189,248,0.9)]"
+      className="duration-300"
       style={{
-        fontFamily: '"Press Start 2P", system-ui, sans-serif',
-        letterSpacing: "0.08em",
+        fontFamily:
+          '"FF Oxmox", system-ui, -apple-system, "Segoe UI", sans-serif',
+        letterSpacing: "0.06em",
       }}
     >
       O
@@ -379,21 +460,28 @@ const App = () => {
   const [message, setMessage] = useState("Welcome to X & O!");
   const [showModal, setShowModal] = useState(false);
   const [stats, setStats] = useState<Stats>(initialStats);
-  const [nicknameInput, setNicknameInput] = useState("");
-  const [joinGameIdInput, setJoinGameIdInput] = useState("");
-  const [leaderboard, setLeaderboard] = useState<any[]>([]);
-  const [recentMatches, setRecentMatches] = useState<Match[]>([]);
 
+  const [leaderboardWins, setLeaderboardWins] = useState<any[]>([]);
+  const [leaderboardPoints, setLeaderboardPoints] = useState<any[]>([]);
+  const [leaderboardMode, setLeaderboardMode] = useState<"wins" | "points">(
+    "wins"
+  );
+
+  const [recentMatches, setRecentMatches] = useState<Match[]>([]);
   const [theme, setTheme] = useState<"original" | "light">("original");
 
   const tapSoundRef = useRef<HTMLAudioElement | null>(null);
 
   const [stakeAmount, setStakeAmount] = useState<string>("");
-  const [wagerMode, setWagerMode] = useState<"create" | "join">("create");
-  const [wagerMatchCode, setWagerMatchCode] = useState("");
+  const [wagerMode, setWagerMode] = useState<"points" | "usdc">("points");
   const [generatedWagerCode, setGeneratedWagerCode] = useState<string | null>(
     null
   );
+
+  const nicknameInputRef = useRef<HTMLInputElement | null>(null);
+  const joinGameIdRef = useRef<HTMLInputElement | null>(null);
+  const pointsMatchCodeRef = useRef<HTMLInputElement | null>(null);
+  const usdcMatchCodeRef = useRef<HTMLInputElement | null>(null);
 
   const currentPlayerSymbol: Symbol = gameState.isXNext ? "X" : "O";
   const userWallet = address?.toLowerCase() ?? null;
@@ -422,13 +510,6 @@ const App = () => {
     }
   };
 
-  // nickname input from userData
-  useEffect(() => {
-    if (userData.nickname && !nicknameInput) {
-      setNicknameInput(userData.nickname);
-    }
-  }, [userData.nickname, nicknameInput]);
-
   // tap sound
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -441,12 +522,12 @@ const App = () => {
   useEffect(() => {
     try {
       miniappSdk.actions.ready();
-    } catch (e) {
-      console.log("Farcaster miniapp ready() not available, ignoring.");
+    } catch {
+      // ignore
     }
   }, []);
 
-  // Wallet-based user data + stats
+  // Wallet-based user data + stats (XO points)
   useEffect(() => {
     if (!db || !userWallet) return;
 
@@ -455,12 +536,36 @@ const App = () => {
     const unsubscribeUser = onSnapshot(userDocRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data() as any;
+        const nicknameFromDb =
+          data.nickname || `Player_${userWallet.slice(2, 6).toUpperCase()}`;
+
+        // --- XO reset logic: ensure default 6000 if missing/invalid ---
+        let xoPointsFromDb: number;
+        if (typeof data.xoPoints === "number") {
+          xoPointsFromDb = data.xoPoints;
+        } else if (typeof data.wallet === "number") {
+          xoPointsFromDb = data.wallet;
+        } else {
+          xoPointsFromDb = 6000;
+        }
+
+        let normalizedXo = xoPointsFromDb;
+        if (!data.xoPoints || data.xoPoints <= 0) {
+          normalizedXo = 6000; // reset to default for this wallet
+          setDoc(
+            userDocRef,
+            { xoPoints: normalizedXo, lastUpdated: Date.now() },
+            { merge: true }
+          ).catch((e) =>
+            console.error("Error normalizing XO points for user:", e)
+          );
+        }
+
         setUserData((prev) => ({
           ...prev,
           walletAddress: userWallet,
-          nickname:
-            data.nickname || `Player_${userWallet.slice(2, 6).toUpperCase()}`,
-          wallet: data.wallet !== undefined ? data.wallet : 100,
+          nickname: nicknameFromDb,
+          xoPoints: normalizedXo,
         }));
         setStats({
           wins: data.wins || 0,
@@ -475,7 +580,7 @@ const App = () => {
       } else {
         const newUserData = {
           nickname: `Player_${userWallet.slice(2, 6).toUpperCase()}`,
-          wallet: 100,
+          xoPoints: 6000,
           walletAddress: userWallet,
           lastLogin: Date.now(),
         };
@@ -488,21 +593,25 @@ const App = () => {
     return () => unsubscribeUser();
   }, [userWallet]);
 
+  // Nickname update (uncontrolled input)
   const updateNickname = async () => {
-    if (!userWallet || !db || !nicknameInput.trim()) return;
+    if (!userWallet || !db || !nicknameInputRef.current) return;
+    const value = nicknameInputRef.current.value.trim();
+    if (!value) return;
+
     try {
       await setDoc(
         doc(db, "users", userWallet),
-        { nickname: nicknameInput.trim(), lastUpdated: Date.now() },
+        { nickname: value, lastUpdated: Date.now() },
         { merge: true }
       );
       showPopup("Nickname updated!", "info");
-    } catch (e) {
+    } catch {
       showPopup("Failed to update nickname.", "error");
     }
   };
 
-  // --- Online Game Functions (random sides) ---
+  // --- Online Game Functions (ranked, no stake) ---
   const createOnlineGame = async () => {
     if (!userWallet || !db) {
       showPopup("Connect your Base wallet first.", "error");
@@ -512,10 +621,7 @@ const App = () => {
       const gameId = Math.random().toString(36).substring(2, 10).toUpperCase();
       const gameDocRef = doc(db, "games", gameId);
 
-      const initial: GameState & {
-        hostWallet: string | null;
-        hostNickname: string | null;
-      } = {
+      const initial: GameState = {
         ...initialGameState,
         gameMode: "online",
         playerX: null,
@@ -525,6 +631,8 @@ const App = () => {
         playerONickname: null,
         hostWallet: userWallet,
         hostNickname: userData.nickname,
+        stakeType: "none",
+        stakeAmountPoints: null,
       };
 
       await setDoc(gameDocRef, initial);
@@ -540,13 +648,60 @@ const App = () => {
     }
   };
 
-  const joinOnlineGame = async (gameIdInput: string) => {
-    if (!userWallet || !db || !gameIdInput) {
+  // --- Points Stake Game Creation ---
+  const createPointsGameWithStake = async (bet: number) => {
+    if (!userWallet || !db) {
+      showPopup("Connect your Base wallet first.", "error");
+      return;
+    }
+    if (bet <= 0) {
+      showPopup("Choose a valid XO stake.", "error");
+      return;
+    }
+    if (userData.xoPoints < bet) {
+      showPopup("Not enough XO points to host this stake.", "error");
+      return;
+    }
+
+    try {
+      const gameId = Math.random().toString(36).substring(2, 10).toUpperCase();
+      const gameDocRef = doc(db, "games", gameId);
+
+      const initial: GameState = {
+        ...initialGameState,
+        gameMode: "online",
+        playerX: null,
+        playerO: null,
+        lastUpdated: Date.now(),
+        playerXNickname: null,
+        playerONickname: null,
+        hostWallet: userWallet,
+        hostNickname: userData.nickname,
+        stakeType: "points",
+        stakeAmountPoints: bet,
+      };
+
+      await setDoc(gameDocRef, initial);
+      setOnlineGameId(gameId);
+      setLocalPlayerSymbol(null);
+      setMode("online");
+      setMessage(
+        `Points Match ${gameId} created with ${bet} XO stake. Share the code; sides are random.`
+      );
+      setGeneratedWagerCode(gameId);
+    } catch (e: any) {
+      console.error(e);
+      showPopup(`Failed to create stake game: ${e.message}`, "error");
+    }
+  };
+
+  const joinOnlineGame = async (gameIdInputValue: string) => {
+    if (!userWallet || !db || !gameIdInputValue) {
       showPopup("Connect your Base wallet and enter a game ID.", "error");
       return;
     }
 
-    const cleanId = gameIdInput.trim().toUpperCase();
+    const cleanId = gameIdInputValue.trim().toUpperCase();
     let assignedSymbol: Symbol | null = null;
 
     try {
@@ -560,6 +715,41 @@ const App = () => {
         if (data.playerX && data.playerO) throw new Error("Room full.");
         if (data.hostWallet === userWallet)
           throw new Error("You already created this game.");
+
+        if (data.stakeType === "points") {
+          const bet = data.stakeAmountPoints || 0;
+          const hostWallet = data.hostWallet as string | undefined;
+
+          if (!hostWallet || bet <= 0) {
+            throw new Error("Invalid stake game configuration.");
+          }
+
+          const hostRef = doc(db, "users", hostWallet.toLowerCase());
+          const joinerRef = doc(db, "users", userWallet);
+
+          const hostDoc = await transaction.get(hostRef);
+          const joinerDoc = await transaction.get(joinerRef);
+
+          if (!hostDoc.exists() || !joinerDoc.exists()) {
+            throw new Error("Player profile not found for stake.");
+          }
+
+          const hostData = hostDoc.data() as any;
+          const joinerData = joinerDoc.data() as any;
+
+          const hostPoints =
+            hostData.xoPoints !== undefined
+              ? hostData.xoPoints
+              : hostData.wallet || 6000;
+          const joinerPoints =
+            joinerData.xoPoints !== undefined
+              ? joinerData.xoPoints
+              : joinerData.wallet || 6000;
+
+          if (hostPoints < bet || joinerPoints < bet) {
+            throw new Error("Insufficient XO points for this stake match.");
+          }
+        }
 
         const hostWallet: string = data.hostWallet;
         const hostNickname: string =
@@ -599,6 +789,8 @@ const App = () => {
         ? "Game not found"
         : e.message.includes("full")
         ? "Room full"
+        : e.message.includes("Insufficient XO points")
+        ? e.message
         : e.message;
       showPopup(msg, "error");
     }
@@ -639,7 +831,7 @@ const App = () => {
     if (!db || !onlineGameId) return;
     if (!gameState.playerX || !gameState.playerO) return;
 
-    const hostWallet = (gameState as any).hostWallet as string | null | undefined;
+    const hostWallet = (gameState.hostWallet || null) as string | null;
     if (!hostWallet || !userWallet || hostWallet.toLowerCase() !== userWallet) {
       return;
     }
@@ -675,6 +867,56 @@ const App = () => {
       console.error("Failed to log match:", e);
     }
   };
+
+  // --- Apply XO points stake ---
+  const applyStakePoints = useCallback(
+    async (
+      winner: Symbol | null,
+      bet: number,
+      playerXWallet: string,
+      playerOWallet: string
+    ) => {
+      if (!db) return;
+      if (!winner || bet <= 0) return;
+
+      const winnerWallet =
+        winner === "X" ? playerXWallet.toLowerCase() : playerOWallet.toLowerCase();
+      const loserWallet =
+        winner === "X" ? playerOWallet.toLowerCase() : playerXWallet.toLowerCase();
+
+      const winnerRef = doc(db, "users", winnerWallet);
+      const loserRef = doc(db, "users", loserWallet);
+
+      try {
+        await runTransaction(db, async (tx: any) => {
+          const winnerDoc = await tx.get(winnerRef);
+          const loserDoc = await tx.get(loserRef);
+          if (!winnerDoc.exists() || !loserDoc.exists()) return;
+
+          const wData = winnerDoc.data() as any;
+          const lData = loserDoc.data() as any;
+
+          const wPts =
+            wData.xoPoints !== undefined
+              ? wData.xoPoints
+              : wData.wallet || 6000;
+          const lPts =
+            lData.xoPoints !== undefined
+              ? lData.xoPoints
+              : lData.wallet || 6000;
+
+          const newWinner = wPts + bet;
+          const newLoser = Math.max(0, lPts - bet);
+
+          tx.update(winnerRef, { xoPoints: newWinner });
+          tx.update(loserRef, { xoPoints: newLoser });
+        });
+      } catch (e) {
+        console.error("Failed to apply stake points:", e);
+      }
+    },
+    []
+  );
 
   // --- Online listener ---
   useEffect(() => {
@@ -752,19 +994,15 @@ const App = () => {
         const wins = data.wins || 0;
         const losses = data.losses || 0;
         const draws = data.draws || 0;
-        const walletBalance = data.wallet || 0;
 
         let newWins = wins;
         let newLosses = losses;
         let newDraws = draws;
-        let newWallet = walletBalance;
 
         if (result === "win") {
           newWins = wins + 1;
-          newWallet = walletBalance + (isOnline ? 5 : 1);
         } else if (result === "loss") {
           newLosses = losses + 1;
-          newWallet = Math.max(0, walletBalance - (isOnline ? 3 : 0));
         } else {
           newDraws = draws + 1;
         }
@@ -772,7 +1010,6 @@ const App = () => {
         update.wins = newWins;
         update.losses = newLosses;
         update.draws = newDraws;
-        update.wallet = newWallet;
 
         const prevStreak = data.currentStreak || 0;
         const prevBest = data.bestStreak || 0;
@@ -845,6 +1082,20 @@ const App = () => {
 
           if (mode === "online") {
             logOnlineMatch(winner);
+
+            if (
+              gameState.stakeType === "points" &&
+              gameState.stakeAmountPoints &&
+              gameState.playerX &&
+              gameState.playerO
+            ) {
+              applyStakePoints(
+                winner,
+                gameState.stakeAmountPoints,
+                gameState.playerX,
+                gameState.playerO
+              );
+            }
           }
         } else {
           status = "It's a Draw! 🤝";
@@ -860,7 +1111,16 @@ const App = () => {
 
       return { ...resultState, message: status };
     },
-    [mode, localPlayerSymbol, updateStats]
+    [
+      mode,
+      localPlayerSymbol,
+      updateStats,
+      gameState.stakeType,
+      gameState.stakeAmountPoints,
+      gameState.playerX,
+      gameState.playerO,
+      applyStakePoints,
+    ]
   );
 
   const handleBoardUpdate = useCallback(
@@ -900,7 +1160,7 @@ const App = () => {
     [gameState, mode, onlineGameId, checkGameResult, userData.nickname]
   );
 
-  // --- AI move effect (moved AFTER handleBoardUpdate to avoid TDZ) ---
+  // --- AI move effect (after handleBoardUpdate) ---
   useEffect(() => {
     if (
       mode === "ai" &&
@@ -966,19 +1226,36 @@ const App = () => {
     }
   };
 
-  // Leaderboard fetch
+  // --- Leaderboard fetch ---
   useEffect(() => {
     if (mode === "leaderboard" && db) {
       const fetchLeaderboard = async () => {
         try {
           const usersRef = collection(db, "users");
-          const qUsers = query(usersRef, orderBy("onlineWins", "desc"), limit(50));
-          const querySnapshot = await getDocs(qUsers);
-          const topUsers = querySnapshot.docs.map((doc) => ({
+
+          const qWins = query(
+            usersRef,
+            orderBy("onlineWins", "desc"),
+            limit(50)
+          );
+          const snapWins = await getDocs(qWins);
+          const topWins = snapWins.docs.map((doc) => ({
             id: doc.id,
             ...doc.data(),
           }));
-          setLeaderboard(topUsers);
+          setLeaderboardWins(topWins);
+
+          const qPoints = query(
+            usersRef,
+            orderBy("xoPoints", "desc"),
+            limit(50)
+          );
+          const snapPoints = await getDocs(qPoints);
+          const topPoints = snapPoints.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }));
+          setLeaderboardPoints(topPoints);
         } catch (e) {
           console.error("Error fetching leaderboard:", e);
           showPopup("Failed to load leaderboard.", "error");
@@ -988,7 +1265,7 @@ const App = () => {
     }
   }, [mode, showPopup]);
 
-  // Recent matches fetch
+  // --- Recent matches fetch ---
   useEffect(() => {
     if (mode !== "stats" || !db || !userWallet) return;
 
@@ -1015,7 +1292,7 @@ const App = () => {
     fetchMatches();
   }, [mode, userWallet]);
 
-  // --- Wager UI handlers ---
+  // 1v1 Wager (USDC) handlers
   const handleCreateWagerLobby = () => {
     if (!stakeAmount || Number(stakeAmount) <= 0) {
       showPopup("Enter a valid stake amount in USDC.", "error");
@@ -1030,13 +1307,14 @@ const App = () => {
     setGeneratedWagerCode(code);
 
     showPopup(
-      `Prototype only: created 1v1 code ${code}. Wire this to your USDC escrow contract before using with real funds.`,
+      `Prototype only: created 1v1 USDC code ${code}. Wire this to your USDC escrow contract before using with real funds.`,
       "info"
     );
   };
 
   const handleJoinWagerLobby = () => {
-    if (!wagerMatchCode.trim()) {
+    const code = usdcMatchCodeRef.current?.value.trim() || "";
+    if (!code) {
       showPopup("Enter a valid 1v1 match code.", "error");
       return;
     }
@@ -1050,7 +1328,7 @@ const App = () => {
     }
 
     showPopup(
-      `Prototype only: would join 1v1 match ${wagerMatchCode}. Connect this to your escrow contract logic.`,
+      `Prototype only: would join USDC match ${code}. Connect this to your escrow contract logic.`,
       "info"
     );
   };
@@ -1068,9 +1346,9 @@ const App = () => {
     <div
       className={`cell flex justify-center items-center text-7xl font-black cursor-pointer shadow-inner transition-colors duration-200 active:scale-95 ${
         winning
-          ? "bg-yellow-400/80 text-gray-900 animate-pulse"
+          ? "bg-yellow-400/80 text-gray-900"
           : "bg-white hover:bg-gray-100"
-      } ${value === "X" ? "text-black" : "text-sky-400"}`}
+      } ${value === "X" ? "text-black" : "text-sky-500"}`}
       onClick={() => handleClick(index)}
     >
       {value === "X" ? <AnimatedX /> : value === "O" ? <AnimatedO /> : null}
@@ -1092,25 +1370,44 @@ const App = () => {
 
   const HeaderBar = () => {
     const totalGames = stats.wins + stats.losses + stats.draws;
+    const badges = getBadges(userData.xoPoints, stats);
+    const primaryBadge = badges[0];
+
     return (
       <div className="w-full max-w-md flex justify-between items-center p-3 bg-slate-900/80 rounded-2xl shadow-lg mb-4 text-white border border-slate-700">
         <BaseLogoGlow connected={!!userWallet} />
         <div className="flex flex-col items-end space-y-1">
           <div className="flex items-center space-x-2">
             <User size={18} className="text-indigo-400" />
-            <span className="text-sm font-semibold truncate max-w-[120px]">
+            <span
+              className="text-sm font-semibold truncate max-w-[140px]"
+              style={{
+                fontFamily:
+                  '"Comic Neue", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+              }}
+            >
               {userData.nickname}
             </span>
           </div>
           <div className="flex items-center space-x-3">
             <div className="flex items-center space-x-1">
-              <DollarSign size={16} className="text-green-400" />
-              <span className="text-sm font-semibold">{userData.wallet}</span>
+              <DollarSign size={16} className="text-emerald-400" />
+              <span className="text-sm font-semibold">
+                {userData.xoPoints} XO
+              </span>
             </div>
             <span className="text-[11px] text-gray-300">
               {totalGames} total games
             </span>
           </div>
+          {primaryBadge && (
+            <div className="flex items-center gap-1 text-[11px] mt-1">
+              <span>{primaryBadge.emoji}</span>
+              <span className="px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-600 text-slate-100">
+                {primaryBadge.label}
+              </span>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1136,7 +1433,7 @@ const App = () => {
               </p>
             </div>
             <div className="h-14 w-14 rounded-2xl bg-black/60 border border-slate-600/60 flex items-center justify-center">
-              <Cpu size={22} className="text-sky-300 animate-pulse" />
+              <Cpu size={22} className="text-sky-300" />
             </div>
           </div>
 
@@ -1155,11 +1452,11 @@ const App = () => {
                 >
                   {isXSpot && (
                     <span
-                      className="text-xl font-black text-black animate-bounce"
+                      className="text-xl font-black text-black"
                       style={{
                         fontFamily:
-                          '"Press Start 2P", system-ui, sans-serif',
-                        letterSpacing: "0.08em",
+                          '"FF Oxmox", system-ui, -apple-system, "Segoe UI", sans-serif',
+                        letterSpacing: "0.06em",
                       }}
                     >
                       X
@@ -1167,11 +1464,11 @@ const App = () => {
                   )}
                   {isOSpot && (
                     <span
-                      className="text-xl font-black text-sky-400 animate-pulse"
+                      className="text-xl font-black text-sky-400"
                       style={{
                         fontFamily:
-                          '"Press Start 2P", system-ui, sans-serif',
-                        letterSpacing: "0.08em",
+                          '"FF Oxmox", system-ui, -apple-system, "Segoe UI", sans-serif',
+                        letterSpacing: "0.06em",
                       }}
                     >
                       O
@@ -1197,67 +1494,91 @@ const App = () => {
   );
 
   const RenderOnlineSetup = () => (
-    <div className="w-full flex flex-col items-center bg-gradient-to-br from-emerald-700 to-emerald-800 p-4 rounded-xl shadow-lg text-white space-y-3 border border-emerald-500/40 mt-1">
-      <TrendingUp className="mb-1" />
-      <h3 className="text-xl font-semibold">Online Multiplayer</h3>
+    <div className="w-full flex flex-col items-center bg-gradient-to-br from-emerald-700 to-emerald-800 p-4 rounded-2xl shadow-lg text-white space-y-4 border border-emerald-500/40 mt-1">
+      <div className="w-full flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="h-9 w-9 rounded-xl bg-black/40 flex items-center justify-center">
+            <TrendingUp size={20} className="text-emerald-200" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold">Online Ranked</h3>
+            <p className="text-[11px] text-emerald-100/90">
+              Create or join a game by code. Sides (X/O) are assigned randomly.
+              No XO staking required here.
+            </p>
+          </div>
+        </div>
+        <div className="text-right text-[11px] text-emerald-100/80">
+          <p>Mode</p>
+          <p className="font-semibold">Ranked 1v1</p>
+        </div>
+      </div>
+
       {!isConnected || !userWallet ? (
-        <p className="text-yellow-300 text-sm text-center">
-          Connect your Base wallet to play online ranked games.
+        <p className="text-yellow-200 text-xs text-center bg-black/20 rounded-xl px-3 py-2">
+          Connect your Base wallet above to play ranked online.
         </p>
-      ) : onlineGameId ? (
-        <div className="w-full text-center">
-          <p className="text-sm font-bold mb-1">
-            In Game:{" "}
-            <span className="font-mono bg-black/30 px-2 py-1 rounded">
+      ) : onlineGameId && gameState.stakeType !== "points" ? (
+        <div className="w-full space-y-2 bg-black/20 rounded-xl p-3 border border-emerald-400/40">
+          <p className="text-xs text-emerald-100/90">
+            In Ranked Game:{" "}
+            <span className="font-mono bg-black/40 px-2 py-1 rounded">
               {onlineGameId}
             </span>
           </p>
-          <p className="text-xs text-emerald-100 mb-2">
+          <p className="text-xs text-emerald-50/90">
             Your side:{" "}
             <span className="font-semibold">
               {localPlayerSymbol ?? "TBD (random)"}
             </span>
           </p>
-          <button
-            onClick={() => setMode("online")}
-            className="w-full p-3 bg-emerald-500 rounded-lg hover:bg-emerald-400 font-semibold"
-          >
-            Go To Game
-          </button>
-          <button
-            onClick={leaveOnlineGame}
-            className="mt-2 text-red-200 hover:text-red-300 underline text-xs"
-          >
-            Leave Game
-          </button>
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={() => setMode("online")}
+              className="flex-1 p-2 bg-emerald-500 rounded-lg hover:bg-emerald-400 font-semibold text-xs"
+            >
+              Go To Game
+            </button>
+            <button
+              onClick={leaveOnlineGame}
+              className="flex-1 text-xs bg-red-500/80 hover:bg-red-400 rounded-lg font-semibold"
+            >
+              Leave
+            </button>
+          </div>
         </div>
       ) : (
         <>
           <button
             onClick={createOnlineGame}
-            className="w-full p-3 bg-emerald-900 rounded-lg hover:bg-emerald-700 font-semibold"
+            className="w-full p-3 bg-emerald-900 rounded-lg hover:bg-emerald-700 font-semibold text-xs flex items-center justify-center gap-2"
           >
-            Create Ranked Game (Random X/O)
+            <span>➕ Create Ranked Game</span>
+            <span className="text-[10px] bg-black/40 px-2 py-0.5 rounded-full">
+              Random X / O
+            </span>
           </button>
-          <input
-            type="text"
-            placeholder="Enter Game ID"
-            value={joinGameIdInput}
-            onChange={(e) => setJoinGameIdInput(e.target.value.toUpperCase())}
-            className="w-full p-2 rounded text-gray-900 placeholder-gray-500 text-center font-mono uppercase"
-            maxLength={8}
-          />
-          <button
-            onClick={() => joinOnlineGame(joinGameIdInput)}
-            disabled={joinGameIdInput.length < 4}
-            className={`w-full p-3 rounded-lg font-semibold transition ${
-              joinGameIdInput.length < 4
-                ? "bg-emerald-500/50 cursor-not-allowed"
-                : "bg-emerald-500 hover:bg-emerald-400"
-            }`}
-          >
-            Join Ranked Game
-          </button>
+
+          <div className="w-full bg-black/20 rounded-xl p-3 border border-emerald-400/40 space-y-2">
+            <p className="text-[11px] text-emerald-100/90">
+              Or join a friend&apos;s ranked lobby:
+            </p>
+            <input
+              ref={joinGameIdRef}
+              type="text"
+              placeholder="Enter Room Code (e.g. 8G4KQZ)"
+              className="w-full p-2 rounded-lg bg-slate-950/80 border border-emerald-300/60 text-center font-mono text-sm text-white placeholder-emerald-100/60 outline-none focus:border-white"
+              maxLength={12}
+            />
+            <button
+              onClick={() =>
+                joinOnlineGame(joinGameIdRef.current?.value || "")
+              }
+              className="w-full p-2 rounded-lg font-semibold text-xs transition bg-emerald-500 hover:bg-emerald-400"
+            >
+              Join Ranked Game
+            </button>
+          </div>
         </>
       )}
     </div>
@@ -1267,18 +1588,44 @@ const App = () => {
     <div className="flex flex-col items-center w-full max-w-sm space-y-4">
       <HeroAnimatedXO />
 
+      {/* NEW: Fast access to XO betting mode */}
+      <div className="w-full rounded-2xl bg-gradient-to-r from-emerald-600/40 via-emerald-700/40 to-slate-900/90 border border-emerald-400/60 p-4 flex flex-col gap-3 shadow-lg">
+        <div className="flex items-center gap-3">
+          <div className="h-9 w-9 rounded-xl bg-black/40 flex items-center justify-center">
+            <Users size={20} className="text-emerald-200" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold text-emerald-50">
+              Play by betting XO points
+            </h3>
+            <p className="text-[11px] text-emerald-100/90">
+              Host or join 1v1 matches where both players stake XO points. The
+              winner takes the pot.
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => {
+            setWagerMode("points");
+            setMode("wager");
+          }}
+          className="self-end px-4 py-2 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-semibold uppercase tracking-[0.18em]"
+        >
+          Go
+        </button>
+      </div>
+
+      {/* Quick AI */}
       <div className="w-full rounded-2xl bg-gradient-to-br from-purple-500/20 to-indigo-900/40 border border-purple-500/40 p-4 shadow-lg">
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 rounded-xl bg-black/40 flex items-center justify-center">
             <Cpu size={20} className="text-white" />
           </div>
           <div className="flex-1">
-            <h3 className="text-sm font-semibold text-white">
-              Quick Match vs AI
-            </h3>
+            <h3 className="text-sm font-semibold text-white">Quick AI</h3>
             <p className="text-[11px] text-slate-200/80">
-              Instant game against a smart bot. Great for warming up your
-              strategy.
+              Play against AI instantly. This mode does not change your XO
+              points—perfect for warm-ups.
             </p>
           </div>
         </div>
@@ -1289,7 +1636,7 @@ const App = () => {
               setMode("ai");
               handleRestart("ai");
             }}
-            className="py-2 px-4 rounded-full font-semibold text-[11px] bg-purple-900/80 hover:bg-purple-800"
+            className={`py-2 px-4 rounded-full font-semibold text-[11px] bg-purple-900/80 hover:bg-purple-800`}
           >
             Medium
           </button>
@@ -1299,13 +1646,14 @@ const App = () => {
               setMode("ai");
               handleRestart("ai");
             }}
-            className="py-2 px-4 rounded-full font-semibold text-[11px] bg-purple-500/80 hover:bg-purple-400 text-black"
+            className={`py-2 px-4 rounded-full font-semibold text-[11px] bg-purple-500/80 hover:bg-purple-400 text-black`}
           >
             Hard
           </button>
         </div>
       </div>
 
+      {/* Ranked Online */}
       <RenderOnlineSetup />
     </div>
   );
@@ -1319,42 +1667,53 @@ const App = () => {
         ? Math.round((stats.onlineWins / totalOnlineGames) * 100)
         : 0;
 
+    const badges = getBadges(userData.xoPoints, stats);
+
     return (
       <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-900/90 rounded-xl text-white space-y-4 border border-slate-700/80">
-        <h2 className="text-2xl font-bold">Profile</h2>
+        <div className="w-full flex flex-col items-center gap-1">
+          <h2 className="text-2xl font-bold">Profile</h2>
+          <p
+            className="text-lg px-3 py-1 rounded-full bg-slate-800/80 border border-slate-600/80"
+            style={{
+              fontFamily:
+                '"Comic Neue", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+            }}
+          >
+            {userData.nickname}
+          </p>
+        </div>
 
-        <div className="w-full">
-          <label htmlFor="nickname" className="text-sm block mb-1">
-            Nickname:
+        {/* Nickname */}
+        <div className="w-full p-3 rounded-xl bg-slate-900/80 border border-slate-600/80 space-y-2">
+          <label htmlFor="nickname" className="text-xs font-semibold">
+            Edit nickname
           </label>
           <div className="flex space-x-2">
             <input
               id="nickname"
+              ref={nicknameInputRef}
               type="text"
-              value={nicknameInput}
-              onChange={(e) => setNicknameInput(e.target.value)}
-              className="flex-grow p-2 rounded text-gray-900"
+              defaultValue={userData.nickname}
+              className="flex-grow p-2 rounded-lg bg-slate-950 border border-slate-700 text-sm text-white placeholder-gray-500 outline-none focus:border-sky-400"
               maxLength={15}
+              placeholder="Type your new nickname"
             />
             <button
               onClick={updateNickname}
-              disabled={!nicknameInput.trim()}
-              className={`p-2 rounded font-semibold transition ${
-                !nicknameInput.trim()
-                  ? "bg-indigo-400/50"
-                  : "bg-indigo-600 hover:bg-indigo-700"
-              }`}
+              className="px-3 rounded-lg font-semibold text-xs transition bg-indigo-600 hover:bg-indigo-700"
             >
               Save
             </button>
           </div>
         </div>
 
+        {/* XO points */}
         <div className="w-full p-3 bg-gray-800 rounded-lg flex justify-between items-center">
-          <span className="font-semibold">Wallet balance:</span>
-          <span className="flex items-center">
-            <DollarSign size={16} className="text-green-400 mr-1" />
-            {userData.wallet}
+          <span className="font-semibold text-sm">XO Points</span>
+          <span className="flex items-center text-sm">
+            <DollarSign size={16} className="text-emerald-400 mr-1" />
+            {userData.xoPoints}
           </span>
         </div>
 
@@ -1364,6 +1723,7 @@ const App = () => {
           </div>
         )}
 
+        {/* Theme */}
         <div className="w-full mt-1 p-4 rounded-xl bg-slate-900/80 border border-slate-600/70 space-y-3">
           <h3 className="text-sm font-semibold mb-1">Theme</h3>
           <div className="flex gap-2">
@@ -1381,21 +1741,38 @@ const App = () => {
               onClick={() => setThemeAndPersist("light")}
               className={`flex-1 py-2 rounded-full text-xs font-semibold border transition ${
                 theme === "light"
-                  ? "bg-white text-slate-900 border-sky-400"
+                  ? "bg-slate-800 text-slate-100 border-sky-400"
                   : "bg-slate-800 text-slate-200 border-slate-600 hover:border-sky-400"
               }`}
             >
-              Light Mode
+              Neutral Dark
             </button>
           </div>
-          <p className="text-[11px] text-gray-300">
-            Switch between the original neon arena and a softer light mode.{" "}
-            <span className="text-sky-300">
-              Theme is saved locally for this device.
-            </span>
-          </p>
         </div>
 
+        {/* Badges */}
+        <div className="w-full mt-1 p-4 rounded-xl bg-slate-900/80 border border-slate-600 space-y-3">
+          <h3 className="text-sm font-semibold">Badges</h3>
+          {badges.length === 0 ? (
+            <p className="text-xs text-gray-400">
+              No badges yet. Earn XO points and online wins to unlock badges.
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {badges.map((badge) => (
+                <div
+                  key={badge.id}
+                  className="flex items-center gap-1 px-2 py-1 rounded-full bg-slate-800 border border-slate-600 text-[11px]"
+                >
+                  <span>{badge.emoji}</span>
+                  <span className="font-semibold">{badge.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Stats */}
         <div className="w-full mt-2 p-4 rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-600/60 shadow-inner space-y-3">
           <h3 className="text-lg font-semibold mb-1 flex items-center">
             <BarChart size={18} className="mr-2 text-sky-400" />
@@ -1438,6 +1815,7 @@ const App = () => {
           </div>
         </div>
 
+        {/* Recent Matches */}
         <div className="w-full mt-1 p-4 rounded-xl bg-slate-900/80 border border-slate-600 space-y-3">
           <h3 className="text-sm font-semibold flex items-center">
             <Trophy size={16} className="mr-2 text-amber-300" />
@@ -1530,97 +1908,193 @@ const App = () => {
     );
   };
 
-  const LeaderboardPage = () => (
-    <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-900/90 rounded-xl text-white space-y-4 border border-slate-700/70 shadow-inner">
-      <div className="w-full flex flex-col items-center mb-1">
-        <h2 className="text-2xl font-bold flex items-center">
-          <BarChart className="mr-2 text-sky-400" /> Online Leaderboard
-        </h2>
-        <p className="text-xs text-gray-400 mt-1">
-          Top 50 ranked by online wins
-        </p>
-      </div>
+  const LeaderboardPage = () => {
+    const list =
+      leaderboardMode === "wins" ? leaderboardWins : leaderboardPoints;
 
-      {leaderboard.length === 0 ? (
-        <div className="flex items-center justify-center p-4">
-          <Loader2 className="animate-spin mr-2" /> Loading Leaderboard...
+    return (
+      <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-900/90 rounded-xl text-white space-y-4 border border-slate-700/70 shadow-inner">
+        <div className="w-full flex flex-col items-center mb-1">
+          <h2 className="text-2xl font-bold flex items-center">
+            <BarChart className="mr-2 text-sky-400" /> Leaderboard
+          </h2>
+          <p className="text-xs text-gray-400 mt-1 text-center">
+            View top players by online wins or XO points.
+          </p>
         </div>
-      ) : (
-        <div className="w-full space-y-2 max-h-[420px] overflow-y-auto pr-1">
-          {leaderboard.map((user: any, index: number) => {
-            const wins = user.onlineWins || 0;
-            const onlineLosses = user.onlineLosses || 0;
-            const onlineDraws = user.onlineDraws || 0;
-            const totalOnline = wins + onlineLosses + onlineDraws;
-            const winRate =
-              totalOnline > 0 ? Math.round((wins / totalOnline) * 100) : 0;
 
-            const isSelf = user.id === userWallet;
-            const rankName = getRankLabel(wins);
+        <div className="w-full flex bg-slate-900/70 rounded-full p-1 border border-slate-600/80 text-xs">
+          <button
+            onClick={() => setLeaderboardMode("wins")}
+            className={`flex-1 py-2 rounded-full font-semibold transition ${
+              leaderboardMode === "wins"
+                ? "bg-sky-500 text-black shadow"
+                : "text-gray-300 hover:text-white"
+            }`}
+          >
+            Online Wins
+          </button>
+          <button
+            onClick={() => setLeaderboardMode("points")}
+            className={`flex-1 py-2 rounded-full font-semibold transition ${
+              leaderboardMode === "points"
+                ? "bg-emerald-500 text-black shadow"
+                : "text-gray-300 hover:text-white"
+            }`}
+          >
+            XO Points
+          </button>
+        </div>
 
-            return (
-              <div
-                key={user.id}
-                className={`flex items-center gap-3 p-3 rounded-xl border ${
-                  isSelf
-                    ? "border-yellow-400/70 bg-yellow-500/10"
-                    : "border-slate-700 bg-slate-900/70"
-                } shadow-sm`}
-              >
+        {list.length === 0 ? (
+          <div className="flex items-center justify-center p-4">
+            <Loader2 className="animate-spin mr-2" /> Loading Leaderboard...
+          </div>
+        ) : (
+          <div className="w-full space-y-2 max-h-[420px] overflow-y-auto pr-1">
+            {list.map((user: any, index: number) => {
+              const wins = user.onlineWins || 0;
+              const losses = user.onlineLosses || 0;
+              const draws = user.onlineDraws || 0;
+              const totalOnline = wins + losses + draws;
+              const winRate =
+                totalOnline > 0
+                  ? Math.round((wins / totalOnline) * 100)
+                  : 0;
+
+              const xoPoints =
+                user.xoPoints !== undefined
+                  ? user.xoPoints
+                  : user.wallet || 0;
+
+              const isSelf = user.id === userWallet;
+              const rankName =
+                leaderboardMode === "wins"
+                  ? getRankLabel(wins)
+                  : xoPoints >= 10000
+                  ? "Whale"
+                  : xoPoints >= 8000
+                  ? "Grinder"
+                  : xoPoints >= 6000
+                  ? "Stacker"
+                  : "Climber";
+
+              const userBadges = getBadges(
+                xoPoints,
+                {
+                  wins: user.wins || 0,
+                  losses: user.losses || 0,
+                  draws: user.draws || 0,
+                  onlineWins: wins,
+                  onlineLosses: losses,
+                  onlineDraws: draws,
+                  currentStreak: user.currentStreak || 0,
+                  bestStreak: user.bestStreak || 0,
+                } as Stats
+              );
+              const badge = userBadges[0];
+
+              return (
                 <div
-                  className={`h-9 w-9 rounded-full flex items-center justify-center text-sm font-bold ${
-                    index === 0
-                      ? "bg-yellow-400 text-black"
-                      : index === 1
-                      ? "bg-gray-300 text-black"
-                      : index === 2
-                      ? "bg-amber-700 text-white"
-                      : "bg-slate-800 text-slate-100"
-                  }`}
+                  key={user.id}
+                  className={`flex items-center gap-3 p-3 rounded-xl border ${
+                    isSelf
+                      ? "border-yellow-400/70 bg-yellow-500/10"
+                      : "border-slate-700 bg-slate-900/70"
+                  } shadow-sm`}
                 >
-                  {index + 1}
-                </div>
+                  <div
+                    className={`h-9 w-9 rounded-full flex items-center justify-center text-sm font-bold ${
+                      index === 0
+                        ? "bg-yellow-400 text-black"
+                        : index === 1
+                        ? "bg-gray-300 text-black"
+                        : index === 2
+                        ? "bg-amber-700 text-white"
+                        : "bg-slate-800 text-slate-100"
+                    }`}
+                  >
+                    {index + 1}
+                  </div>
 
-                <div className="flex-1">
-                  <div className="flex justify-between items-center">
-                    <span className="font-semibold truncate max-w-[120px]">
-                      {user.nickname || "Anon"}
-                      {isSelf && (
-                        <span className="ml-1 text-[10px] text-yellow-300">
-                          (You)
-                        </span>
-                      )}
-                    </span>
-                    <span className="text-[10px] text-sky-300">
-                      {rankName}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center text-xs mt-1">
-                    <span className="text-emerald-300 font-semibold">
-                      {wins} online wins
-                    </span>
-                    <span className="text-gray-400">{winRate}% win rate</span>
-                  </div>
-                  <div className="mt-1 h-2 rounded-full bg-slate-800 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-emerald-500"
-                      style={{ width: `${Math.min(winRate, 100)}%` }}
-                    />
+                  <div className="flex-1">
+                    <div className="flex justify-between items-center">
+                      <span className="font-semibold truncate max-w-[120px]">
+                        {user.nickname || "Anon"}
+                        {isSelf && (
+                          <span className="ml-1 text-[10px] text-yellow-300">
+                            (You)
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-[10px] text-sky-300">
+                        {rankName}
+                      </span>
+                    </div>
+
+                    {leaderboardMode === "wins" ? (
+                      <>
+                        <div className="flex justify-between items-center text-xs mt-1">
+                          <span className="text-emerald-300 font-semibold">
+                            {wins} online wins
+                          </span>
+                          <span className="text-gray-400">
+                            {winRate}% win rate
+                          </span>
+                        </div>
+                        <div className="mt-1 h-2 rounded-full bg-slate-800 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-emerald-500"
+                            style={{
+                              width: `${Math.min(winRate, 100)}%`,
+                            }}
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex justify-between items-center text-xs mt-1">
+                          <span className="text-emerald-300 font-semibold">
+                            {xoPoints} XO points
+                          </span>
+                          <span className="text-gray-400">
+                            {wins} online wins
+                          </span>
+                        </div>
+                        <div className="mt-1 h-2 rounded-full bg-slate-800 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-500"
+                            style={{
+                              width: `${
+                                Math.min(xoPoints / 12000, 1) * 100
+                              }%`,
+                            }}
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {badge && (
+                      <div className="mt-1 text-[10px] text-slate-300 flex items-center gap-1">
+                        <span>{badge.emoji}</span>
+                        <span>{badge.label}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      <button
-        onClick={() => setMode("selection")}
-        className="mt-1 w-full bg-indigo-600 p-3 rounded-lg hover:bg-indigo-700 text-sm font-semibold"
-      >
-        Back
-      </button>
-    </div>
-  );
+              );
+            })}
+          </div>
+        )}
+        <button
+          onClick={() => setMode("selection")}
+          className="mt-1 w-full bg-indigo-600 p-3 rounded-lg hover:bg-indigo-700 text-sm font-semibold"
+        >
+          Back
+        </button>
+      </div>
+    );
+  };
 
   const TournamentPage = () => (
     <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gradient-to-br from-slate-900 via-gray-900 to-slate-950 rounded-xl text-white space-y-5 border border-slate-700/70 shadow-2xl">
@@ -1643,7 +2117,7 @@ const App = () => {
         </p>
         <h3 className="text-2xl font-black leading-snug">
           Are you a{" "}
-          <span className="text-yellow-300 drop-shadow-[0_0_6px_rgba(250,204,21,0.7)]">
+          <span className="text-yellow-300">
             god
           </span>{" "}
           of X &amp; O?
@@ -1675,8 +2149,8 @@ const App = () => {
       </div>
 
       <div className="text-[10px] text-gray-400 text-center max-w-xs">
-        Tournament stats and rewards will hook into your existing wallet-based
-        profile and leaderboard rank.
+        Tournament stats and rewards will hook into your wallet-based profile,
+        XO points, and leaderboard rank.
       </div>
     </div>
   );
@@ -1692,136 +2166,223 @@ const App = () => {
             <Users className="text-emerald-300" size={26} />
           </div>
           <h2 className="text-xl font-extrabold tracking-wide text-center">
-            1v1 Wager Arena
+            1v1 Arena
           </h2>
           <p className="text-xs text-gray-300 text-center max-w-xs">
-            Challenge a single opponent, set a Base USDC stake, and let X &amp;
-            O decide who walks away with the pot.
+            Challenge a single opponent with either in-game XO points or real
+            USDC (prototype) stakes.
           </p>
         </div>
 
         <div className="w-full flex bg-slate-900/70 rounded-full p-1 border border-slate-600/80">
           <button
-            onClick={() => setWagerMode("create")}
+            onClick={() => setWagerMode("points")}
             className={`flex-1 py-2 text-xs font-semibold rounded-full transition ${
-              wagerMode === "create"
+              wagerMode === "points"
                 ? "bg-emerald-500 text-black shadow"
                 : "text-gray-300 hover:text-white"
             }`}
           >
-            Host 1v1
+            XO Points
           </button>
           <button
-            onClick={() => setWagerMode("join")}
+            onClick={() => setWagerMode("usdc")}
             className={`flex-1 py-2 text-xs font-semibold rounded-full transition ${
-              wagerMode === "join"
-                ? "bg-emerald-500 text-black shadow"
+              wagerMode === "usdc"
+                ? "bg-sky-500 text-black shadow"
                 : "text-gray-300 hover:text-white"
             }`}
           >
-            Join 1v1
+            USDC (proto)
           </button>
         </div>
 
-        <div className="w-full rounded-2xl bg-slate-900/70 border border-slate-700/80 p-4 space-y-3">
-          <div className="flex justify-between items-center text-xs text-gray-300 mb-1">
-            <span>Stake amount</span>
-            <span className="flex items-center gap-1 text-emerald-300 font-semibold">
-              <DollarSign size={12} />
-              USDC on Base
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={stakeAmount}
-              onChange={(e) => setStakeAmount(e.target.value)}
-              placeholder="0.00"
-              className="flex-1 p-2 rounded-lg bg-slate-950 border border-slate-700 text-sm text-white placeholder-gray-500 outline-none focus:border-emerald-400"
-            />
-            <button
-              type="button"
-              onClick={() => setStakeAmount("1")}
-              className="text-[11px] px-2 py-1 rounded-full bg-slate-800 text-gray-200 border border-slate-600 hover:border-emerald-400"
-            >
-              1 USDC
-            </button>
-          </div>
-
-          <div className="flex justify-between items-center text-[11px] text-gray-400 pt-1">
-            <span>Winner takes:</span>
-            <span className="text-emerald-300 font-semibold">
-              {potentialWinnings.toFixed(2)} USDC
-            </span>
-          </div>
-        </div>
-
-        {wagerMode === "create" ? (
-          <div className="w-full rounded-2xl bg-gradient-to-br from-emerald-700 via-emerald-800 to-slate-900 border border-emerald-400/60 p-4 space-y-3 shadow-inner">
-            <p className="text-[11px] uppercase tracking-[0.2em] text-emerald-100 mb-1">
-              Create a stake match
-            </p>
-            <p className="text-xs text-emerald-50/90 mb-1">
-              You&apos;ll host the lobby. Share the match code with your
-              opponent so they can lock in the same stake.
-            </p>
-            <button
-              onClick={handleCreateWagerLobby}
-              className="w-full py-3 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-xs uppercase tracking-[0.18em] flex items-center justify-center"
-            >
-              Create 1v1 Lobby
-            </button>
-            {generatedWagerCode && (
-              <div className="mt-2 p-2 rounded-lg bg-black/30 border border-emerald-300/40 text-xs flex flex-col items-center">
-                <span className="text-[10px] uppercase tracking-[0.2em] text-emerald-200 mb-1">
-                  Match Code
-                </span>
-                <span className="font-mono text-lg font-bold tracking-[0.2em]">
-                  {generatedWagerCode}
-                </span>
-                <span className="mt-1 text-[10px] text-emerald-100/80 text-center">
-                  Share this with your opponent and start your game in the{" "}
-                  <span className="font-semibold">Online</span> tab.
+        {wagerMode === "points" ? (
+          <>
+            {/* XO points staking */}
+            <div className="w-full rounded-2xl bg-slate-900/70 border border-slate-700/80 p-4 space-y-3">
+              <div className="flex justify-between items-center text-xs text-gray-300 mb-1">
+                <span>Choose stake (XO points)</span>
+                <span className="text-emerald-300 font-semibold">
+                  Balance: {userData.xoPoints} XO
                 </span>
               </div>
-            )}
-          </div>
-        ) : (
-          <div className="w-full rounded-2xl bg-gradient-to-br from-slate-800 via-slate-900 to-slate-950 border border-slate-600 p-4 space-y-3 shadow-inner">
-            <p className="text-[11px] uppercase tracking-[0.2em] text-slate-200 mb-1">
-              Join a stake match
-            </p>
-            <p className="text-xs text-slate-100/90 mb-1">
-              Enter the match code your opponent shared. Make sure you both
-              agree on the same stake amount.
-            </p>
-            <input
-              type="text"
-              value={wagerMatchCode}
-              onChange={(e) => setWagerMatchCode(e.target.value.toUpperCase())}
-              placeholder="XOABCDE"
-              maxLength={8}
-              className="w-full p-2 rounded-lg bg-slate-950 border border-slate-700 text-center font-mono text-sm tracking-[0.2em] text-white placeholder-gray-500 outline-none focus:border-emerald-400"
-            />
-            <button
-              onClick={handleJoinWagerLobby}
-              className="w-full py-3 rounded-full bg-slate-200 hover:bg-white text-black font-semibold text-xs uppercase tracking-[0.18em] flex items-center justify-center"
-            >
-              Join 1v1 Lobby
-            </button>
-          </div>
-        )}
+              <div className="flex gap-2">
+                {[200, 500, 700].map((amt) => (
+                  <button
+                    key={amt}
+                    type="button"
+                    onClick={() => setStakeAmount(String(amt))}
+                    className={`flex-1 py-2 rounded-full text-xs font-semibold border ${
+                      Number(stakeAmount) === amt
+                        ? "bg-emerald-500 text-black border-emerald-400"
+                        : "bg-slate-950 text-slate-100 border-slate-700 hover:border-emerald-400"
+                    }`}
+                  >
+                    {amt} XO
+                  </button>
+                ))}
+              </div>
 
-        <div className="text-[10px] text-gray-400 text-center max-w-xs">
-          <span className="font-semibold text-emerald-300">
-            Onchain safety note:
-          </span>{" "}
-          This screen is UI-only right now. Before using real USDC, connect
-          these buttons to a secure escrow / payout smart contract and test on
-          Base Sepolia first.
-        </div>
+              <div className="flex justify-between items-center text-[11px] text-gray-400 pt-1">
+                <span>Winner receives:</span>
+                <span className="text-emerald-300 font-semibold">
+                  {potentialWinnings.toFixed(0)} XO
+                </span>
+              </div>
+            </div>
+
+            <div className="w-full rounded-2xl bg-gradient-to-br from-emerald-700 via-emerald-800 to-slate-900 border border-emerald-400/60 p-4 space-y-3 shadow-inner">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-emerald-100 mb-1">
+                Host a points match
+              </p>
+              <p className="text-xs text-emerald-50/90 mb-1">
+                You&apos;ll create an online XO match with the chosen stake.
+                Sides (X/O) remain random; stake applies to both players.
+              </p>
+              <button
+                onClick={() =>
+                  createPointsGameWithStake(Number(stakeAmount) || 0)
+                }
+                className="w-full py-3 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-xs uppercase tracking-[0.18em] flex items-center justify-center"
+              >
+                Create XO Points Match
+              </button>
+              {generatedWagerCode && (
+                <div className="mt-2 p-2 rounded-lg bg-black/30 border border-emerald-300/40 text-xs flex flex-col items-center">
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-emerald-200 mb-1">
+                    Match Code
+                  </span>
+                  <span className="font-mono text-lg font-bold tracking-[0.2em]">
+                    {generatedWagerCode}
+                  </span>
+                  <span className="mt-1 text-[10px] text-emerald-100/80 text-center">
+                    Your opponent can join via this code in either the 1v1
+                    screen or the Online tab.
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="w-full rounded-2xl bg-slate-900/80 border border-slate-700 p-4 space-y-3 shadow-inner">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-slate-200 mb-1">
+                Join a points match
+              </p>
+              <p className="text-xs text-slate-100/90 mb-1">
+                Enter the room code shared by your opponent. The host&apos;s
+                chosen XO stake will apply to both of you.
+              </p>
+              <input
+                ref={pointsMatchCodeRef}
+                type="text"
+                placeholder="XOABCDE"
+                maxLength={8}
+                className="w-full p-2 rounded-lg bg-slate-950 border border-slate-700 text-center font-mono text-sm tracking-[0.2em] text-white placeholder-gray-500 outline-none focus:border-emerald-400"
+              />
+              <button
+                onClick={() =>
+                  joinOnlineGame(pointsMatchCodeRef.current?.value || "")
+                }
+                className="w-full py-3 rounded-full bg-slate-200 hover:bg-white text-black font-semibold text-xs uppercase tracking-[0.18em] flex items-center justify-center"
+              >
+                Join XO Points Match
+              </button>
+            </div>
+
+            <div className="text-[10px] text-gray-400 text-center max-w-xs">
+              XO points move only when a points match ends. AI and regular
+              ranked games do not adjust your XO balance.
+            </div>
+          </>
+        ) : (
+          <>
+            {/* USDC prototype */}
+            <div className="w-full rounded-2xl bg-slate-900/70 border border-slate-700/80 p-4 space-y-3">
+              <div className="flex justify-between items-center text-xs text-gray-300 mb-1">
+                <span>Stake amount (USDC)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={stakeAmount}
+                  onChange={(e) => setStakeAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="flex-1 p-2 rounded-lg bg-slate-950 border border-slate-700 text-sm text-white placeholder-gray-500 outline-none focus:border-sky-400"
+                />
+                <button
+                  type="button"
+                  onClick={() => setStakeAmount("1")}
+                  className="text-[11px] px-2 py-1 rounded-full bg-slate-800 text-gray-200 border border-slate-600 hover:border-sky-400"
+                >
+                  1 USDC
+                </button>
+              </div>
+
+              <div className="flex justify-between items-center text-[11px] text-gray-400 pt-1">
+                <span>Winner takes:</span>
+                <span className="text-sky-300 font-semibold">
+                  {potentialWinnings.toFixed(2)} USDC
+                </span>
+              </div>
+            </div>
+
+            <div className="w-full rounded-2xl bg-gradient-to-br from-sky-700 via-sky-800 to-slate-900 border border-sky-400/60 p-4 space-y-3 shadow-inner">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-sky-100 mb-1">
+                Host a USDC match
+              </p>
+              <p className="text-xs text-sky-50/90 mb-1">
+                Prototype only: this UI does not send real USDC yet. Wire it to
+                your escrow smart contract and test on Base Sepolia first.
+              </p>
+              <button
+                onClick={handleCreateWagerLobby}
+                className="w-full py-3 rounded-full bg-sky-500 hover:bg-sky-400 text-black font-semibold text-xs uppercase tracking-[0.18em] flex items-center justify-center"
+              >
+                Create USDC Match (Proto)
+              </button>
+              {generatedWagerCode && (
+                <div className="mt-2 p-2 rounded-lg bg-black/30 border border-sky-300/40 text-xs flex flex-col items-center">
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-sky-200 mb-1">
+                    Match Code
+                  </span>
+                  <span className="font-mono text-lg font-bold tracking-[0.2em]">
+                    {generatedWagerCode}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="w-full rounded-2xl bg-slate-900/80 border border-slate-700 p-4 space-y-3 shadow-inner">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-slate-200 mb-1">
+                Join a USDC match
+              </p>
+              <p className="text-xs text-slate-100/90 mb-1">
+                Enter the match code your opponent shared. Make sure you both
+                agree on the same stake.
+              </p>
+              <input
+                ref={usdcMatchCodeRef}
+                type="text"
+                placeholder="XOABCDE"
+                maxLength={8}
+                className="w-full p-2 rounded-lg bg-slate-950 border border-slate-700 text-center font-mono text-sm tracking-[0.2em] text-white placeholder-gray-500 outline-none focus:border-sky-400"
+              />
+              <button
+                onClick={handleJoinWagerLobby}
+                className="w-full py-3 rounded-full bg-slate-200 hover:bg-white text-black font-semibold text-xs uppercase tracking-[0.18em] flex items-center justify-center"
+              >
+                Join USDC Match (Proto)
+              </button>
+            </div>
+
+            <div className="text-[10px] text-gray-400 text-center max-w-xs">
+              Before using real USDC, connect these buttons to a secure escrow /
+              payout smart contract and test on Base Sepolia first.
+            </div>
+          </>
+        )}
       </div>
     );
   };
@@ -1849,7 +2410,7 @@ const App = () => {
   );
 
   const FooterMenu = () => (
-    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md h-14 bg-black/70 backdrop-blur-xl border border-slate-700/80 rounded-2xl flex justify-around items-center shadow-[0_10px_30px_rgba(0,0,0,0.6)] z-20">
+    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md h-14 bg-black/80 backdrop-blur-xl border border-slate-700/80 rounded-2xl flex justify-around items-center shadow-[0_10px_30px_rgba(0,0,0,0.6)] z-20">
       <MenuItem
         Icon={Home}
         label="Home"
@@ -1967,9 +2528,8 @@ const App = () => {
   const TopBar = () => {
     const wins = stats.onlineWins;
     const rankLabel = getRankLabel(wins);
-    const titleColor = theme === "light" ? "text-slate-900" : "text-white";
-    const subtitleColor =
-      theme === "light" ? "text-slate-500" : "text-slate-400";
+    const titleColor = "text-slate-50";
+    const subtitleColor = "text-slate-400";
 
     return (
       <div className="w-full max-w-lg flex items-center justify-between pt-1 pb-3">
@@ -1998,10 +2558,11 @@ const App = () => {
     );
   };
 
+  // Neutral dark backgrounds
   const rootBgClass =
     theme === "light"
-      ? "bg-slate-100 text-slate-900"
-      : "bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-white";
+      ? "bg-gradient-to-b from-slate-900 via-slate-950 to-black text-slate-50"
+      : "bg-gradient-to-b from-slate-950 via-slate-900 to-black text-white";
 
   // Wallet gate
   if (!isConnected || !userWallet) {
@@ -2013,10 +2574,11 @@ const App = () => {
         <div className="mt-6">
           <BaseLogoGlow connected={false} />
         </div>
-        <p className="mt-4 text-sm text-gray-500 text-center max-w-xs">
+        <p className="mt-4 text-sm text-gray-400 text-center max-w-xs">
           Connect your{" "}
-          <span className="font-semibold text-sky-500">Base wallet</span> to
-          start playing. Your wins and rewards are stored by wallet address.
+          <span className="font-semibold text-sky-400">Base wallet</span> to
+          start playing. Your wins, XO points, and rank are stored by wallet
+          address.
         </p>
 
         <div className="mt-6">
@@ -2032,7 +2594,7 @@ const App = () => {
         </div>
 
         <PopupContainer />
-        <div className="absolute bottom-2 right-4 text-xs text-gray-400">
+        <div className="absolute bottom-2 right-4 text-xs text-gray-500">
           Created by anakincoco
         </div>
       </div>
@@ -2067,8 +2629,7 @@ const App = () => {
             <RenderBoard />
             {isThinking && (
               <p className="text-yellow-400 mt-3 flex items-center justify-center text-sm">
-                <Cpu className="mr-2 animate-pulse" size={16} /> AI is
-                thinking...
+                <Cpu className="mr-2" size={16} /> AI is thinking...
               </p>
             )}
             {(mode === "local" || mode === "ai") && !gameState.isGameOver && (
@@ -2093,10 +2654,23 @@ const App = () => {
                         ? "text-black"
                         : "text-sky-400"
                     }`}
+                    style={{
+                      fontFamily:
+                        localPlayerSymbol === "X" || localPlayerSymbol === "O"
+                          ? '"FF Oxmox", system-ui, -apple-system, "Segoe UI", sans-serif'
+                          : undefined,
+                    }}
                   >
                     {localPlayerSymbol ?? "TBD"}
                   </span>
                 </p>
+                {gameState.stakeType === "points" &&
+                  gameState.stakeAmountPoints && (
+                    <p className="mt-1 text-emerald-300 text-xs">
+                      Stake: {gameState.stakeAmountPoints} XO points (winner
+                      gains, loser loses)
+                    </p>
+                  )}
                 {gameState.playerX && gameState.playerO && (
                   <p className="mt-1">
                     Players: {gameState.playerXNickname} (X) vs{" "}
