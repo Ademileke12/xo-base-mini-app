@@ -26,6 +26,7 @@ import {
   getFirestore,
   doc,
   setDoc,
+  getDoc,
   onSnapshot,
   runTransaction,
   collection,
@@ -71,6 +72,7 @@ try {
 const WINNING_COMBINATIONS = [
   [0, 1, 2],
   [3, 4, 5],
+  [6, 7, 8],
   [0, 3, 6],
   [1, 4, 7],
   [2, 5, 8],
@@ -138,6 +140,25 @@ type Badge = {
   label: string;
   emoji: string;
   description: string;
+};
+
+// --- Daily Missions Types ---
+type DailyMissionType =
+  | "play_any"
+  | "play_ai"
+  | "play_ranked"
+  | "win_ranked"
+  | "stake_match";
+
+type DailyMission = {
+  id: string;
+  type: DailyMissionType;
+  title: string;
+  description: string;
+  target: number;
+  progress: number;
+  reward: number;
+  completed: boolean;
 };
 
 // --- Rank helper ---
@@ -211,6 +232,75 @@ const getBadges = (xoPoints: number, stats: Stats): Badge[] => {
   }
 
   return badges;
+};
+
+// --- Daily missions templates ---
+const missionTemplates: Array<
+  Omit<DailyMission, "id" | "progress" | "completed">
+> = [
+  {
+    type: "play_any",
+    title: "Warmup Rounds",
+    description: "Play 3 games in any mode.",
+    target: 3,
+    reward: 200,
+  },
+  {
+    type: "play_ai",
+    title: "AI Sparring",
+    description: "Play 2 games vs AI.",
+    target: 2,
+    reward: 150,
+  },
+  {
+    type: "play_ranked",
+    title: "Ranked Climb",
+    description: "Play 3 ranked online games.",
+    target: 3,
+    reward: 300,
+  },
+  {
+    type: "win_ranked",
+    title: "Secure the W",
+    description: "Win 2 ranked online games.",
+    target: 2,
+    reward: 350,
+  },
+  {
+    type: "stake_match",
+    title: "High Stakes",
+    description: "Finish 1 XO points stake match.",
+    target: 1,
+    reward: 250,
+  },
+];
+
+const shuffleArray = <T,>(arr: T[]): T[] => {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+};
+
+const getTodayKey = () => {
+  const d = new Date();
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+const generateDailyMissions = (): DailyMission[] => {
+  const shuffled = shuffleArray(missionTemplates);
+  const picked = shuffled.slice(0, 3);
+  return picked.map((tpl, idx) => ({
+    id: `m_${idx}_${tpl.type}`,
+    ...tpl,
+    progress: 0,
+    completed: false,
+  }));
 };
 
 // --- AI Logic ---
@@ -482,6 +572,9 @@ const App = () => {
   const pointsMatchCodeRef = useRef<HTMLInputElement | null>(null);
   const usdcMatchCodeRef = useRef<HTMLInputElement | null>(null);
 
+  const [dailyMissions, setDailyMissions] = useState<DailyMission[]>([]);
+  const [missionsLoading, setMissionsLoading] = useState<boolean>(true);
+
   const currentPlayerSymbol: Symbol = gameState.isXNext ? "X" : "O";
   const userWallet = address?.toLowerCase() ?? null;
 
@@ -592,6 +685,58 @@ const App = () => {
     return () => unsubscribeUser();
   }, [userWallet]);
 
+  // --- Daily missions load / 24h reset ---
+  useEffect(() => {
+    if (!db || !userWallet) return;
+
+    const loadMissions = async () => {
+      try {
+        const missionsRef = doc(db, "dailyMissions", userWallet);
+        const snap = await getDoc(missionsRef);
+        const todayKey = getTodayKey();
+        const now = Date.now();
+
+        if (!snap.exists()) {
+          const missions = generateDailyMissions();
+          await setDoc(missionsRef, {
+            dateKey: todayKey,
+            resetAt: now + 24 * 60 * 60 * 1000,
+            missions,
+          });
+          setDailyMissions(missions);
+        } else {
+          const data = snap.data() as any;
+          const shouldReset =
+            data.dateKey !== todayKey ||
+            typeof data.resetAt !== "number" ||
+            data.resetAt < now;
+
+          if (shouldReset) {
+            const missions = generateDailyMissions();
+            await setDoc(
+              missionsRef,
+              {
+                dateKey: todayKey,
+                resetAt: now + 24 * 60 * 60 * 1000,
+                missions,
+              },
+              { merge: true }
+            );
+            setDailyMissions(missions);
+          } else {
+            setDailyMissions((data.missions as DailyMission[]) || []);
+          }
+        }
+      } catch (e) {
+        console.error("Error loading daily missions:", e);
+      } finally {
+        setMissionsLoading(false);
+      }
+    };
+
+    loadMissions();
+  }, [userWallet]);
+
   // Nickname update (uncontrolled input)
   const updateNickname = async () => {
     if (!userWallet || !db || !nicknameInputRef.current) return;
@@ -609,6 +754,75 @@ const App = () => {
       showPopup("Failed to update nickname.", "error");
     }
   };
+
+  // --- Apply mission progress ---
+  const applyMissionTriggers = useCallback(
+    async (triggers: DailyMissionType[]) => {
+      if (!db || !userWallet || !triggers.length) return;
+      if (!dailyMissions.length) return;
+
+      const updated = dailyMissions.map((m) => ({ ...m }));
+      let totalReward = 0;
+      let changed = false;
+
+      for (const m of updated) {
+        if (m.completed) continue;
+        if (!triggers.includes(m.type)) continue;
+
+        const newProgress = Math.min(m.target, m.progress + 1);
+        if (newProgress !== m.progress) {
+          m.progress = newProgress;
+          changed = true;
+        }
+
+        if (!m.completed && m.progress >= m.target) {
+          m.completed = true;
+          totalReward += m.reward;
+          changed = true;
+        }
+      }
+
+      if (!changed) return;
+
+      setDailyMissions(updated);
+
+      try {
+        const missionsRef = doc(db, "dailyMissions", userWallet);
+        await setDoc(
+          missionsRef,
+          {
+            missions: updated,
+          },
+          { merge: true }
+        );
+
+        if (totalReward > 0) {
+          const userDocRef = doc(db, "users", userWallet);
+
+          await runTransaction(db, async (tx: any) => {
+            const snap = await tx.get(userDocRef);
+            if (!snap.exists()) return;
+            const data = snap.data() as any;
+            const currentXo =
+              typeof data.xoPoints === "number"
+                ? data.xoPoints
+                : typeof data.wallet === "number"
+                ? data.wallet
+                : 6000;
+
+            tx.update(userDocRef, {
+              xoPoints: currentXo + totalReward,
+            });
+          });
+
+          showPopup(`Daily missions: +${totalReward} XO earned!`, "info");
+        }
+      } catch (e) {
+        console.error("Error applying mission triggers:", e);
+      }
+    },
+    [db, userWallet, dailyMissions, showPopup]
+  );
 
   // --- Online Game Functions (ranked, no stake) ---
   const createOnlineGame = async () => {
@@ -1071,6 +1285,27 @@ const App = () => {
         isGameOver: !!winner || draw,
       };
 
+      // daily mission triggers
+      const missionTriggers: DailyMissionType[] = [];
+      missionTriggers.push("play_any");
+
+      if (mode === "ai") {
+        missionTriggers.push("play_ai");
+      }
+
+      if (mode === "online") {
+        missionTriggers.push("play_ranked");
+
+        const playerSymbol = localPlayerSymbol;
+        if (winner && playerSymbol && winner === playerSymbol) {
+          missionTriggers.push("win_ranked");
+        }
+
+        if (gameState.stakeType === "points") {
+          missionTriggers.push("stake_match");
+        }
+      }
+
       if (resultState.isGameOver) {
         setShowModal(true);
         if (winner) {
@@ -1104,6 +1339,9 @@ const App = () => {
             logOnlineMatch(null);
           }
         }
+
+        // apply mission progress when game ends
+        applyMissionTriggers(missionTriggers);
       } else {
         status = `Player ${newIsXNext ? "X" : "O"}'s Turn`;
       }
@@ -1119,6 +1357,7 @@ const App = () => {
       gameState.playerX,
       gameState.playerO,
       applyStakePoints,
+      applyMissionTriggers,
     ]
   );
 
@@ -1159,7 +1398,7 @@ const App = () => {
     [gameState, mode, onlineGameId, checkGameResult, userData.nickname]
   );
 
-  // --- AI move effect (after handleBoardUpdate) ---
+  // --- AI move effect (must be after handleBoardUpdate) ---
   useEffect(() => {
     if (
       mode === "ai" &&
@@ -1492,6 +1731,81 @@ const App = () => {
     </div>
   );
 
+  const DailyMissionsPreview = () => {
+    if (missionsLoading) {
+      return (
+        <div className="w-full rounded-2xl bg-slate-900/80 border border-slate-700/80 p-3 animate-pulse">
+          <p className="text-xs text-gray-400">Loading daily missions...</p>
+        </div>
+      );
+    }
+
+    if (!dailyMissions.length) return null;
+
+    const visible = dailyMissions.slice(0, 2);
+
+    return (
+      <div className="w-full rounded-2xl bg-slate-900/90 border border-sky-500/40 p-3 mb-1">
+        <div className="flex justify-between items-center mb-2">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.2em] text-sky-300">
+              Daily Missions
+            </p>
+            <p className="text-[10px] text-slate-300">
+              Refreshes every 24 hours
+            </p>
+          </div>
+        </div>
+        <div className="space-y-2">
+          {visible.map((m) => {
+            const progressPct = Math.min(
+              100,
+              (m.progress / m.target) * 100 || 0
+            );
+            return (
+              <div
+                key={m.id}
+                className="rounded-lg bg-slate-950/80 border border-slate-700/80 p-2 text-xs"
+              >
+                <div className="flex justify-between items-center mb-1">
+                  <span className="font-semibold text-slate-50">
+                    {m.title}
+                  </span>
+                  <span className="text-emerald-300 font-semibold">
+                    +{m.reward} XO
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-300 mb-1">
+                  {m.description}
+                </p>
+                <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden mb-0.5">
+                  <div
+                    className={`h-full rounded-full ${
+                      m.completed
+                        ? "bg-emerald-400"
+                        : "bg-gradient-to-r from-sky-400 to-emerald-400"
+                    }`}
+                    style={{ width: `${progressPct}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-slate-400">
+                  <span>
+                    {m.progress}/{m.target}
+                  </span>
+                  {m.completed && (
+                    <span className="text-emerald-300 font-semibold">
+                      Completed
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   const RenderOnlineSetup = () => (
     <div className="w-full flex flex-col items-center bg-gradient-to-br from-emerald-700 to-emerald-800 p-4 rounded-2xl shadow-lg text-white space-y-4 border border-emerald-500/40 mt-1">
       <div className="w-full flex items-center justify-between">
@@ -1587,7 +1901,9 @@ const App = () => {
     <div className="flex flex-col items-center w-full max-w-sm space-y-4">
       <HeroAnimatedXO />
 
-      {/* NEW: Fast access to XO betting mode */}
+      <DailyMissionsPreview />
+
+      {/* Fast access to XO betting mode */}
       <div className="w-full rounded-2xl bg-gradient-to-r from-emerald-600/40 via-emerald-700/40 to-slate-900/90 border border-emerald-400/60 p-4 flex flex-col gap-3 shadow-lg">
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 rounded-xl bg-black/40 flex items-center justify-center">
@@ -1620,7 +1936,7 @@ const App = () => {
           <div className="h-9 w-9 rounded-xl bg-black/40 flex items-center justify-center">
             <Cpu size={20} className="text-white" />
           </div>
-        <div className="flex-1">
+          <div className="flex-1">
             <h3 className="text-sm font-semibold text-white">Quick AI</h3>
             <p className="text-[11px] text-slate-200/80">
               Play against AI instantly. This mode does not change your XO
@@ -1635,7 +1951,7 @@ const App = () => {
               setMode("ai");
               handleRestart("ai");
             }}
-            className={`py-2 px-4 rounded-full font-semibold text-[11px] bg-purple-900/80 hover:bg-purple-800`}
+            className="py-2 px-4 rounded-full font-semibold text-[11px] bg-purple-900/80 hover:bg-purple-800"
           >
             Medium
           </button>
@@ -1645,7 +1961,7 @@ const App = () => {
               setMode("ai");
               handleRestart("ai");
             }}
-            className={`py-2 px-4 rounded-full font-semibold text-[11px] bg-purple-500/80 hover:bg-purple-400 text-black`}
+            className="py-2 px-4 rounded-full font-semibold text-[11px] bg-purple-500/80 hover:bg-purple-400 text-black"
           >
             Hard
           </button>
@@ -1767,6 +2083,62 @@ const App = () => {
                   <span className="font-semibold">{badge.label}</span>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+
+        {/* Daily missions full view */}
+        <div className="w-full mt-1 p-4 rounded-xl bg-slate-900/80 border border-slate-600 space-y-3">
+          <h3 className="text-sm font-semibold">Today&apos;s Missions</h3>
+          {missionsLoading ? (
+            <p className="text-xs text-gray-400">Loading missions…</p>
+          ) : dailyMissions.length === 0 ? (
+            <p className="text-xs text-gray-400">
+              Missions will appear here once generated.
+            </p>
+          ) : (
+            <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+              {dailyMissions.map((m) => {
+                const pct = Math.min(100, (m.progress / m.target) * 100 || 0);
+                return (
+                  <div
+                    key={m.id}
+                    className="rounded-lg bg-slate-950/80 border border-slate-700/80 p-2 text-xs"
+                  >
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="font-semibold text-slate-50">
+                        {m.title}
+                      </span>
+                      <span className="text-emerald-300 font-semibold">
+                        +{m.reward} XO
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-300 mb-1">
+                      {m.description}
+                    </p>
+                    <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden mb-0.5">
+                      <div
+                        className={`h-full rounded-full ${
+                          m.completed
+                            ? "bg-emerald-400"
+                            : "bg-gradient-to-r from-sky-400 to-emerald-400"
+                        }`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[10px] text-slate-400">
+                      <span>
+                        {m.progress}/{m.target}
+                      </span>
+                      {m.completed && (
+                        <span className="text-emerald-300 font-semibold">
+                          Completed
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -2443,24 +2815,11 @@ const App = () => {
     </div>
   );
 
-  // NEW: for XO points stake games, go back to XO lobby instead of Play Again
-  const exitStakePointsGame = useCallback(() => {
-    setShowModal(false);
-    setGameState(initialGameState);
-    setOnlineGameId(null);
-    setLocalPlayerSymbol(null);
-    setMode("wager");
-    setMessage("Choose your XO stake to start a new 1v1 match.");
-  }, []);
-
   const Modal = useMemo(() => {
     if (!showModal) return null;
     const playerSymbol = mode === "ai" ? "X" : localPlayerSymbol;
     const isPlayerWin =
       !!gameState.winner && playerSymbol && gameState.winner === playerSymbol;
-
-    const isStakePointsGame =
-      mode === "online" && gameState.stakeType === "points";
 
     return (
       <div className="fixed inset-0 bg-gray-900 bg-opacity-90 flex justify-center items-center z-50 p-4">
@@ -2482,29 +2841,13 @@ const App = () => {
                 : "Your opponent took this round."
               : "Well matched!"}
           </p>
-
-          {/* Normal games: Play Again button */}
-          {!isStakePointsGame && (
-            <button
-              onClick={() => handleRestart(mode as GameMode)}
-              className="w-full bg-indigo-600 text-white p-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 flex items-center justify-center relative z-10"
-            >
-              <RotateCcw size={20} className="mr-2" />
-              Play Again
-            </button>
-          )}
-
-          {/* XO stake games: Back to XO Points Lobby */}
-          {isStakePointsGame && (
-            <button
-              onClick={exitStakePointsGame}
-              className="w-full bg-emerald-500 text-white p-3 rounded-lg font-semibold hover:bg-emerald-400 transition duration-150 flex items-center justify-center relative z-10"
-            >
-              <RotateCcw size={20} className="mr-2" />
-              Back to XO Points Lobby
-            </button>
-          )}
-
+          <button
+            onClick={() => handleRestart(mode as GameMode)}
+            className="w-full bg-indigo-600 text-white p-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 flex items-center justify-center relative z-10"
+          >
+            <RotateCcw size={20} className="mr-2" />
+            Play Again
+          </button>
           <button
             onClick={() => setMode("selection")}
             className="w-full mt-3 bg-gray-200 text-gray-800 p-3 rounded-lg font-semibold hover:bg-gray-300 transition duration-150 relative z-10"
@@ -2529,8 +2872,6 @@ const App = () => {
     onlineGameId,
     leaveOnlineGame,
     localPlayerSymbol,
-    gameState.stakeType,
-    exitStakePointsGame,
   ]);
 
   const RenderLeaveButton = () => {
