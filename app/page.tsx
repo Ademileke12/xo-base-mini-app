@@ -71,7 +71,6 @@ try {
 const WINNING_COMBINATIONS = [
   [0, 1, 2],
   [3, 4, 5],
-  [6, 7, 8],
   [0, 3, 6],
   [1, 4, 7],
   [2, 5, 8],
@@ -1621,7 +1620,7 @@ const App = () => {
           <div className="h-9 w-9 rounded-xl bg-black/40 flex items-center justify-center">
             <Cpu size={20} className="text-white" />
           </div>
-          <div className="flex-1">
+        <div className="flex-1">
             <h3 className="text-sm font-semibold text-white">Quick AI</h3>
             <p className="text-[11px] text-slate-200/80">
               Play against AI instantly. This mode does not change your XO
@@ -2444,11 +2443,24 @@ const App = () => {
     </div>
   );
 
+  // NEW: for XO points stake games, go back to XO lobby instead of Play Again
+  const exitStakePointsGame = useCallback(() => {
+    setShowModal(false);
+    setGameState(initialGameState);
+    setOnlineGameId(null);
+    setLocalPlayerSymbol(null);
+    setMode("wager");
+    setMessage("Choose your XO stake to start a new 1v1 match.");
+  }, []);
+
   const Modal = useMemo(() => {
     if (!showModal) return null;
     const playerSymbol = mode === "ai" ? "X" : localPlayerSymbol;
     const isPlayerWin =
       !!gameState.winner && playerSymbol && gameState.winner === playerSymbol;
+
+    const isStakePointsGame =
+      mode === "online" && gameState.stakeType === "points";
 
     return (
       <div className="fixed inset-0 bg-gray-900 bg-opacity-90 flex justify-center items-center z-50 p-4">
@@ -2470,13 +2482,29 @@ const App = () => {
                 : "Your opponent took this round."
               : "Well matched!"}
           </p>
-          <button
-            onClick={() => handleRestart(mode as GameMode)}
-            className="w-full bg-indigo-600 text-white p-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 flex items-center justify-center relative z-10"
-          >
-            <RotateCcw size={20} className="mr-2" />
-            Play Again
-          </button>
+
+          {/* Normal games: Play Again button */}
+          {!isStakePointsGame && (
+            <button
+              onClick={() => handleRestart(mode as GameMode)}
+              className="w-full bg-indigo-600 text-white p-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 flex items-center justify-center relative z-10"
+            >
+              <RotateCcw size={20} className="mr-2" />
+              Play Again
+            </button>
+          )}
+
+          {/* XO stake games: Back to XO Points Lobby */}
+          {isStakePointsGame && (
+            <button
+              onClick={exitStakePointsGame}
+              className="w-full bg-emerald-500 text-white p-3 rounded-lg font-semibold hover:bg-emerald-400 transition duration-150 flex items-center justify-center relative z-10"
+            >
+              <RotateCcw size={20} className="mr-2" />
+              Back to XO Points Lobby
+            </button>
+          )}
+
           <button
             onClick={() => setMode("selection")}
             className="w-full mt-3 bg-gray-200 text-gray-800 p-3 rounded-lg font-semibold hover:bg-gray-300 transition duration-150 relative z-10"
@@ -2501,6 +2529,8 @@ const App = () => {
     onlineGameId,
     leaveOnlineGame,
     localPlayerSymbol,
+    gameState.stakeType,
+    exitStakePointsGame,
   ]);
 
   const RenderLeaveButton = () => {
