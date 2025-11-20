@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import {
   Repeat,
   Home,
@@ -9,7 +15,7 @@ import {
   TrendingUp,
   RotateCcw,
   BarChart,
-  X,
+  X as XIcon,
   User,
   DollarSign,
   Loader2,
@@ -27,6 +33,8 @@ import {
   orderBy,
   limit,
   getDocs,
+  addDoc,
+  where,
 } from "firebase/firestore";
 
 import { useAccount } from "wagmi";
@@ -93,6 +101,8 @@ type GameState = {
   isGameOver: boolean;
   playerXNickname: string | null;
   playerONickname: string | null;
+  hostWallet?: string | null;
+  hostNickname?: string | null;
 };
 
 type Stats = {
@@ -102,6 +112,31 @@ type Stats = {
   onlineWins: number;
   onlineLosses: number;
   onlineDraws: number;
+  currentStreak: number;
+  bestStreak: number;
+};
+
+type Match = {
+  id: string;
+  gameId: string | null;
+  players: string[];
+  playerX: string | null;
+  playerO: string | null;
+  playerXNickname?: string | null;
+  playerONickname?: string | null;
+  winnerSymbol: Symbol | null;
+  winnerWallet: string | null;
+  loserWallet: string | null;
+  createdAt: number;
+};
+
+// --- Rank helper ---
+const getRankLabel = (wins: number) => {
+  if (wins >= 20) return "Grandmaster";
+  if (wins >= 10) return "Master";
+  if (wins >= 5) return "Challenger";
+  if (wins >= 1) return "Rookie";
+  return "Unranked";
 };
 
 // --- AI Logic ---
@@ -194,7 +229,7 @@ const findBestMove = (
   }
 };
 
-// --- Initial Game State ---
+// --- Initial States ---
 const initialGameState: GameState = {
   board: Array(9).fill(null) as Board,
   isXNext: true,
@@ -209,7 +244,6 @@ const initialGameState: GameState = {
   playerONickname: null,
 };
 
-// --- Initial Stats and User Data ---
 const initialStats: Stats = {
   wins: 0,
   losses: 0,
@@ -217,6 +251,8 @@ const initialStats: Stats = {
   onlineWins: 0,
   onlineLosses: 0,
   onlineDraws: 0,
+  currentStreak: 0,
+  bestStreak: 0,
 };
 
 const initialUserData: PlayerData = {
@@ -225,12 +261,15 @@ const initialUserData: PlayerData = {
   walletAddress: null,
 };
 
-// --- Animated X and O (updated styles) ---
+// --- Animated X and O ---
 const AnimatedX = () => (
-  <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl font-black text-black">
+  <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl text-black">
     <span
-      className="animate-in fade-in zoom-in duration-500"
-      style={{ fontFamily: '"Georgia", "Times New Roman", serif' }}
+      className="animate-in fade-in zoom-in duration-500 drop-shadow-[0_0_6px_rgba(15,23,42,0.8)]"
+      style={{
+        fontFamily: '"Press Start 2P", system-ui, sans-serif',
+        letterSpacing: "0.08em",
+      }}
     >
       X
     </span>
@@ -238,10 +277,13 @@ const AnimatedX = () => (
 );
 
 const AnimatedO = () => (
-  <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl font-black text-blue-500">
+  <div className="flex justify-center items-center w-full h-full text-5xl sm:text-6xl text-sky-400">
     <span
-      className="animate-in fade-in zoom-in duration-500"
-      style={{ fontFamily: '"Georgia", "Times New Roman", serif' }}
+      className="animate-in fade-in zoom-in duration-500 drop-shadow-[0_0_8px_rgba(56,189,248,0.9)]"
+      style={{
+        fontFamily: '"Press Start 2P", system-ui, sans-serif',
+        letterSpacing: "0.08em",
+      }}
     >
       O
     </span>
@@ -269,7 +311,7 @@ const BaseLogoGlow = ({ connected }: { connected: boolean }) => (
   </div>
 );
 
-// --- Global Popup ---
+// --- Popup hook ---
 type Popup = { id: number; message: string; type: "error" | "info" };
 let nextPopupId = 0;
 
@@ -340,8 +382,12 @@ const App = () => {
   const [nicknameInput, setNicknameInput] = useState("");
   const [joinGameIdInput, setJoinGameIdInput] = useState("");
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [recentMatches, setRecentMatches] = useState<Match[]>([]);
 
-  // 1v1 Wager UI state
+  const [theme, setTheme] = useState<"original" | "light">("original");
+
+  const tapSoundRef = useRef<HTMLAudioElement | null>(null);
+
   const [stakeAmount, setStakeAmount] = useState<string>("");
   const [wagerMode, setWagerMode] = useState<"create" | "join">("create");
   const [wagerMatchCode, setWagerMatchCode] = useState("");
@@ -360,11 +406,36 @@ const App = () => {
     );
   }, [mode, currentPlayerSymbol, localPlayerSymbol]);
 
+  // Load theme
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem("xo_theme");
+    if (stored === "light" || stored === "original") {
+      setTheme(stored);
+    }
+  }, []);
+
+  const setThemeAndPersist = (value: "original" | "light") => {
+    setTheme(value);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("xo_theme", value);
+    }
+  };
+
+  // nickname input from userData
   useEffect(() => {
     if (userData.nickname && !nicknameInput) {
       setNicknameInput(userData.nickname);
     }
   }, [userData.nickname, nicknameInput]);
+
+  // tap sound
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const audio = new Audio("/sounds/tap.mp3");
+    audio.volume = 0.35;
+    tapSoundRef.current = audio;
+  }, []);
 
   // Farcaster ready
   useEffect(() => {
@@ -375,7 +446,7 @@ const App = () => {
     }
   }, []);
 
-  // Wallet-based user data
+  // Wallet-based user data + stats
   useEffect(() => {
     if (!db || !userWallet) return;
 
@@ -398,6 +469,8 @@ const App = () => {
           onlineWins: data.onlineWins || 0,
           onlineLosses: data.onlineLosses || 0,
           onlineDraws: data.onlineDraws || 0,
+          currentStreak: data.currentStreak || 0,
+          bestStreak: data.bestStreak || 0,
         });
       } else {
         const newUserData = {
@@ -429,7 +502,7 @@ const App = () => {
     }
   };
 
-  // --- Online Game Functions (wallet-based, RANDOM X/O) ---
+  // --- Online Game Functions (random sides) ---
   const createOnlineGame = async () => {
     if (!userWallet || !db) {
       showPopup("Connect your Base wallet first.", "error");
@@ -561,7 +634,49 @@ const App = () => {
     setMessage("Left online mode.");
   };
 
-  // --- Online Listener ---
+  // --- Log online match ---
+  const logOnlineMatch = async (winner: Symbol | null) => {
+    if (!db || !onlineGameId) return;
+    if (!gameState.playerX || !gameState.playerO) return;
+
+    const hostWallet = (gameState as any).hostWallet as string | null | undefined;
+    if (!hostWallet || !userWallet || hostWallet.toLowerCase() !== userWallet) {
+      return;
+    }
+
+    const playerXWallet = gameState.playerX.toLowerCase();
+    const playerOWallet = gameState.playerO.toLowerCase();
+
+    let winnerWallet: string | null = null;
+    let loserWallet: string | null = null;
+
+    if (winner === "X") {
+      winnerWallet = playerXWallet;
+      loserWallet = playerOWallet;
+    } else if (winner === "O") {
+      winnerWallet = playerOWallet;
+      loserWallet = playerXWallet;
+    }
+
+    try {
+      await addDoc(collection(db, "matches"), {
+        gameId: onlineGameId,
+        players: [playerXWallet, playerOWallet],
+        playerX: playerXWallet,
+        playerO: playerOWallet,
+        playerXNickname: gameState.playerXNickname,
+        playerONickname: gameState.playerONickname,
+        winnerSymbol: winner,
+        winnerWallet,
+        loserWallet,
+        createdAt: Date.now(),
+      });
+    } catch (e) {
+      console.error("Failed to log match:", e);
+    }
+  };
+
+  // --- Online listener ---
   useEffect(() => {
     if (mode !== "online" || !onlineGameId || !db) return;
 
@@ -621,37 +736,7 @@ const App = () => {
     return () => unsubscribe();
   }, [mode, onlineGameId, userWallet, showPopup]);
 
-  // AI move
-  useEffect(() => {
-    if (
-      mode === "ai" &&
-      currentPlayerSymbol === "O" &&
-      !gameState.winner &&
-      !gameState.board.every((c) => c !== null) &&
-      !isThinking
-    ) {
-      setIsThinking(true);
-      setTimeout(() => {
-        const aiMove = findBestMove(
-          [...gameState.board],
-          "O",
-          "X",
-          aiDifficulty
-        );
-        if (aiMove !== null) handleBoardUpdate(aiMove, "O");
-        setIsThinking(false);
-      }, 500);
-    }
-  }, [
-    mode,
-    currentPlayerSymbol,
-    gameState.board,
-    gameState.winner,
-    isThinking,
-    aiDifficulty,
-  ]);
-
-  // Stats update
+  // --- Stats update ---
   const updateStats = useCallback(
     async (result: "win" | "loss" | "draw", isOnline: boolean) => {
       if (!userWallet || !db) return;
@@ -664,15 +749,45 @@ const App = () => {
         const data = userDoc.data() as any;
         const update: any = { lastGame: Date.now() };
 
+        const wins = data.wins || 0;
+        const losses = data.losses || 0;
+        const draws = data.draws || 0;
+        const walletBalance = data.wallet || 0;
+
+        let newWins = wins;
+        let newLosses = losses;
+        let newDraws = draws;
+        let newWallet = walletBalance;
+
         if (result === "win") {
-          update.wins = (data.wins || 0) + 1;
-          update.wallet = (data.wallet || 0) + (isOnline ? 5 : 1);
+          newWins = wins + 1;
+          newWallet = walletBalance + (isOnline ? 5 : 1);
         } else if (result === "loss") {
-          update.losses = (data.losses || 0) + 1;
-          update.wallet = Math.max(0, (data.wallet || 0) - (isOnline ? 3 : 0));
+          newLosses = losses + 1;
+          newWallet = Math.max(0, walletBalance - (isOnline ? 3 : 0));
         } else {
-          update.draws = (data.draws || 0) + 1;
+          newDraws = draws + 1;
         }
+
+        update.wins = newWins;
+        update.losses = newLosses;
+        update.draws = newDraws;
+        update.wallet = newWallet;
+
+        const prevStreak = data.currentStreak || 0;
+        const prevBest = data.bestStreak || 0;
+        let newStreak = prevStreak;
+        let newBest = prevBest;
+
+        if (result === "win") {
+          newStreak = prevStreak + 1;
+          newBest = Math.max(newStreak, prevBest);
+        } else if (result === "loss") {
+          newStreak = 0;
+        }
+
+        update.currentStreak = newStreak;
+        update.bestStreak = newBest;
 
         if (isOnline) {
           const onlineWins = data.onlineWins || 0;
@@ -727,9 +842,17 @@ const App = () => {
           const playerSymbol = mode === "ai" ? "X" : localPlayerSymbol;
           const res = winner === playerSymbol ? "win" : "loss";
           updateStats(res, mode === "online");
+
+          if (mode === "online") {
+            logOnlineMatch(winner);
+          }
         } else {
           status = "It's a Draw! 🤝";
           updateStats("draw", mode === "online");
+
+          if (mode === "online") {
+            logOnlineMatch(null);
+          }
         }
       } else {
         status = `Player ${newIsXNext ? "X" : "O"}'s Turn`;
@@ -777,8 +900,50 @@ const App = () => {
     [gameState, mode, onlineGameId, checkGameResult, userData.nickname]
   );
 
+  // --- AI move effect (moved AFTER handleBoardUpdate to avoid TDZ) ---
+  useEffect(() => {
+    if (
+      mode === "ai" &&
+      currentPlayerSymbol === "O" &&
+      !gameState.winner &&
+      !gameState.board.every((c) => c !== null) &&
+      !isThinking
+    ) {
+      setIsThinking(true);
+      setTimeout(() => {
+        const aiMove = findBestMove(
+          [...gameState.board],
+          "O",
+          "X",
+          aiDifficulty
+        );
+        if (aiMove !== null) handleBoardUpdate(aiMove, "O");
+        setIsThinking(false);
+      }, 500);
+    }
+  }, [
+    mode,
+    currentPlayerSymbol,
+    gameState.board,
+    gameState.winner,
+    isThinking,
+    aiDifficulty,
+    handleBoardUpdate,
+  ]);
+
   const handleClick = (index: number) => {
     if (!isLocalTurn || isThinking) return;
+    if (gameState.board[index]) return;
+
+    if (tapSoundRef.current) {
+      try {
+        tapSoundRef.current.currentTime = 0;
+        tapSoundRef.current.play().catch(() => {});
+      } catch {
+        // ignore
+      }
+    }
+
     handleBoardUpdate(index, currentPlayerSymbol);
   };
 
@@ -807,8 +972,8 @@ const App = () => {
       const fetchLeaderboard = async () => {
         try {
           const usersRef = collection(db, "users");
-          const q = query(usersRef, orderBy("onlineWins", "desc"), limit(50));
-          const querySnapshot = await getDocs(q);
+          const qUsers = query(usersRef, orderBy("onlineWins", "desc"), limit(50));
+          const querySnapshot = await getDocs(qUsers);
           const topUsers = querySnapshot.docs.map((doc) => ({
             id: doc.id,
             ...doc.data(),
@@ -823,7 +988,34 @@ const App = () => {
     }
   }, [mode, showPopup]);
 
-  // 1v1 wager handlers (UI only)
+  // Recent matches fetch
+  useEffect(() => {
+    if (mode !== "stats" || !db || !userWallet) return;
+
+    const fetchMatches = async () => {
+      try {
+        const matchesRef = collection(db, "matches");
+        const qMatches = query(
+          matchesRef,
+          where("players", "array-contains", userWallet),
+          orderBy("createdAt", "desc"),
+          limit(5)
+        );
+        const snap = await getDocs(qMatches);
+        const items: Match[] = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as any),
+        }));
+        setRecentMatches(items);
+      } catch (e) {
+        console.error("Error fetching recent matches:", e);
+      }
+    };
+
+    fetchMatches();
+  }, [mode, userWallet]);
+
+  // --- Wager UI handlers ---
   const handleCreateWagerLobby = () => {
     if (!stakeAmount || Number(stakeAmount) <= 0) {
       showPopup("Enter a valid stake amount in USDC.", "error");
@@ -863,7 +1055,7 @@ const App = () => {
     );
   };
 
-  // Board + UI blocks
+  // --- UI blocks ---
   const Cell = ({
     value,
     index,
@@ -878,7 +1070,7 @@ const App = () => {
         winning
           ? "bg-yellow-400/80 text-gray-900 animate-pulse"
           : "bg-white hover:bg-gray-100"
-      } ${value === "X" ? "text-black" : "text-blue-500"}`}
+      } ${value === "X" ? "text-black" : "text-sky-400"}`}
       onClick={() => handleClick(index)}
     >
       {value === "X" ? <AnimatedX /> : value === "O" ? <AnimatedO /> : null}
@@ -924,7 +1116,6 @@ const App = () => {
     );
   };
 
-  // --- Hero animated X&O card ---
   const HeroAnimatedXO = () => (
     <div className="w-full max-w-sm mb-5">
       <div className="relative rounded-3xl bg-gradient-to-br from-sky-500/20 via-indigo-500/15 to-purple-500/25 border border-sky-500/40 shadow-[0_0_40px_rgba(56,189,248,0.45)] overflow-hidden p-4">
@@ -963,12 +1154,26 @@ const App = () => {
                   }`}
                 >
                   {isXSpot && (
-                    <span className="text-xl font-black text-red-400 animate-bounce">
+                    <span
+                      className="text-xl font-black text-black animate-bounce"
+                      style={{
+                        fontFamily:
+                          '"Press Start 2P", system-ui, sans-serif',
+                        letterSpacing: "0.08em",
+                      }}
+                    >
                       X
                     </span>
                   )}
                   {isOSpot && (
-                    <span className="text-xl font-black text-blue-400 animate-pulse">
+                    <span
+                      className="text-xl font-black text-sky-400 animate-pulse"
+                      style={{
+                        fontFamily:
+                          '"Press Start 2P", system-ui, sans-serif',
+                        letterSpacing: "0.08em",
+                      }}
+                    >
                       O
                     </span>
                   )}
@@ -1058,7 +1263,6 @@ const App = () => {
     </div>
   );
 
-  // Only Quick AI + Online section on home
   const RenderSelection = () => (
     <div className="flex flex-col items-center w-full max-w-sm space-y-4">
       <HeroAnimatedXO />
@@ -1106,7 +1310,6 @@ const App = () => {
     </div>
   );
 
-  // Profile
   const RenderSettings = () => {
     const totalGames = stats.wins + stats.losses + stats.draws;
     const totalOnlineGames =
@@ -1161,6 +1364,38 @@ const App = () => {
           </div>
         )}
 
+        <div className="w-full mt-1 p-4 rounded-xl bg-slate-900/80 border border-slate-600/70 space-y-3">
+          <h3 className="text-sm font-semibold mb-1">Theme</h3>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setThemeAndPersist("original")}
+              className={`flex-1 py-2 rounded-full text-xs font-semibold border transition ${
+                theme === "original"
+                  ? "bg-sky-500 text-black border-sky-400"
+                  : "bg-slate-800 text-slate-200 border-slate-600 hover:border-sky-400"
+              }`}
+            >
+              Original Dark
+            </button>
+            <button
+              onClick={() => setThemeAndPersist("light")}
+              className={`flex-1 py-2 rounded-full text-xs font-semibold border transition ${
+                theme === "light"
+                  ? "bg-white text-slate-900 border-sky-400"
+                  : "bg-slate-800 text-slate-200 border-slate-600 hover:border-sky-400"
+              }`}
+            >
+              Light Mode
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-300">
+            Switch between the original neon arena and a softer light mode.{" "}
+            <span className="text-sky-300">
+              Theme is saved locally for this device.
+            </span>
+          </p>
+        </div>
+
         <div className="w-full mt-2 p-4 rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-600/60 shadow-inner space-y-3">
           <h3 className="text-lg font-semibold mb-1 flex items-center">
             <BarChart size={18} className="mr-2 text-sky-400" />
@@ -1189,18 +1424,100 @@ const App = () => {
               </span>
             </div>
             <div className="bg-slate-900/60 rounded-lg p-2 flex flex-col">
-              <span className="text-xs text-gray-400">Draws</span>
-              <span className="text-lg font-bold text-yellow-300">
-                {stats.draws}
+              <span className="text-xs text-gray-400">Current Streak</span>
+              <span className="text-lg font-bold text-emerald-300">
+                {stats.currentStreak}
               </span>
             </div>
             <div className="bg-slate-900/60 rounded-lg p-2 flex flex-col">
-              <span className="text-xs text-gray-400">Losses</span>
-              <span className="text-lg font-bold text-red-400">
-                {stats.losses}
+              <span className="text-xs text-gray-400">Best Streak</span>
+              <span className="text-lg font-bold text-yellow-300">
+                {stats.bestStreak}
               </span>
             </div>
           </div>
+        </div>
+
+        <div className="w-full mt-1 p-4 rounded-xl bg-slate-900/80 border border-slate-600 space-y-3">
+          <h3 className="text-sm font-semibold flex items-center">
+            <Trophy size={16} className="mr-2 text-amber-300" />
+            Recent Online Matches
+          </h3>
+          {recentMatches.length === 0 ? (
+            <p className="text-xs text-gray-400">
+              No recent matches yet. Play some ranked games to see your history
+              here.
+            </p>
+          ) : (
+            <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+              {recentMatches.map((m) => {
+                const isWinner = m.winnerWallet
+                  ? m.winnerWallet.toLowerCase() === userWallet
+                  : false;
+                const opponentWallet = m.players.find(
+                  (p) => p.toLowerCase() !== userWallet
+                );
+                let opponentName = "Unknown";
+                if (userWallet === m.playerX && m.playerONickname) {
+                  opponentName = m.playerONickname;
+                } else if (userWallet === m.playerO && m.playerXNickname) {
+                  opponentName = m.playerXNickname;
+                } else if (opponentWallet) {
+                  opponentName = `Player_${opponentWallet
+                    .slice(2, 6)
+                    .toUpperCase()}`;
+                }
+
+                const date = new Date(m.createdAt || Date.now());
+                const dateStr = date.toLocaleDateString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                });
+
+                return (
+                  <div
+                    key={m.id}
+                    className={`flex justify-between items-center p-2 rounded-lg text-xs ${
+                      isWinner
+                        ? "bg-emerald-500/15 border border-emerald-400/40"
+                        : "bg-slate-800/80 border border-slate-600/80"
+                    }`}
+                  >
+                    <div className="flex flex-col">
+                      <span className="font-semibold truncate max-w-[140px]">
+                        vs {opponentName}
+                      </span>
+                      <span className="text-[10px] text-gray-400">
+                        {dateStr} ·{" "}
+                        {m.winnerSymbol
+                          ? isWinner
+                            ? "You won"
+                            : "You lost"
+                          : "Draw"}
+                      </span>
+                    </div>
+                    <div className="text-right text-[11px]">
+                      <span
+                        className={`px-2 py-1 rounded-full font-semibold ${
+                          isWinner
+                            ? "bg-emerald-400/20 text-emerald-200"
+                            : m.winnerSymbol
+                            ? "bg-red-400/20 text-red-200"
+                            : "bg-yellow-400/20 text-yellow-100"
+                        }`}
+                      >
+                        {m.winnerSymbol
+                          ? isWinner
+                            ? "WIN"
+                            : "LOSS"
+                          : "DRAW"}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <button
@@ -1213,7 +1530,6 @@ const App = () => {
     );
   };
 
-  // Leaderboard
   const LeaderboardPage = () => (
     <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gray-900/90 rounded-xl text-white space-y-4 border border-slate-700/70 shadow-inner">
       <div className="w-full flex flex-col items-center mb-1">
@@ -1240,6 +1556,7 @@ const App = () => {
               totalOnline > 0 ? Math.round((wins / totalOnline) * 100) : 0;
 
             const isSelf = user.id === userWallet;
+            const rankName = getRankLabel(wins);
 
             return (
               <div
@@ -1274,8 +1591,8 @@ const App = () => {
                         </span>
                       )}
                     </span>
-                    <span className="text-xs text-gray-300">
-                      {totalOnline} games
+                    <span className="text-[10px] text-sky-300">
+                      {rankName}
                     </span>
                   </div>
                   <div className="flex justify-between items-center text-xs mt-1">
@@ -1305,11 +1622,10 @@ const App = () => {
     </div>
   );
 
-  // Tournament
   const TournamentPage = () => (
     <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gradient-to-br from-slate-900 via-gray-900 to-slate-950 rounded-xl text-white space-y-5 border border-slate-700/70 shadow-2xl">
       <div className="flex flex-col items-center space-y-2">
-        <div className="h-12 w-12 rounded-full bg-yellow-400/10 border border-yellow-400/60 flex items-center justify-center shadow-glow">
+        <div className="h-12 w-12 rounded-full bg-yellow-400/10 border border-yellow-400/60 flex items-center justify-center">
           <Trophy className="text-yellow-300" size={26} />
         </div>
         <h2 className="text-xl font-extrabold tracking-wide text-center">
@@ -1365,7 +1681,6 @@ const App = () => {
     </div>
   );
 
-  // 1v1 wager
   const WagerPage = () => {
     const parsedStake = Number(stakeAmount) || 0;
     const potentialWinnings = parsedStake > 0 ? parsedStake * 2 : 0;
@@ -1373,7 +1688,7 @@ const App = () => {
     return (
       <div className="flex flex-col items-center w-full max-w-sm p-4 bg-gradient-to-br from-slate-900 via-gray-900 to-slate-950 rounded-xl text-white space-y-5 border border-slate-700/70 shadow-2xl">
         <div className="flex flex-col items-center space-y-2">
-          <div className="h-12 w-12 rounded-full bg-emerald-400/10 border border-emerald-400/60 flex items-center justify-center shadow-glow">
+          <div className="h-12 w-12 rounded-full bg-emerald-400/10 border border-emerald-400/60 flex items-center justify-center">
             <Users className="text-emerald-300" size={26} />
           </div>
           <h2 className="text-xl font-extrabold tracking-wide text-center">
@@ -1570,34 +1885,47 @@ const App = () => {
 
   const Modal = useMemo(() => {
     if (!showModal) return null;
+    const playerSymbol = mode === "ai" ? "X" : localPlayerSymbol;
+    const isPlayerWin =
+      !!gameState.winner && playerSymbol && gameState.winner === playerSymbol;
+
     return (
       <div className="fixed inset-0 bg-gray-900 bg-opacity-90 flex justify-center items-center z-50 p-4">
-        <div className="bg-white text-gray-900 p-8 rounded-xl shadow-2xl w-full max-w-md text-center transform transition-all scale-100 animate-fade-in">
-          <h2 className="text-3xl font-bold mb-4">
+        <div className="bg-white text-gray-900 p-8 rounded-xl shadow-2xl w-full max-w-md text-center transform transition-all scale-100 animate-fade-in relative overflow-hidden">
+          {isPlayerWin && (
+            <div className="pointer-events-none absolute inset-0 flex justify-center items-center text-5xl opacity-20">
+              🎉
+            </div>
+          )}
+          <h2 className="text-3xl font-bold mb-4 relative z-10">
             {gameState.winner
               ? `Player ${gameState.winner} Wins!`
               : "Game Draw"}
           </h2>
-          <p className="mb-6 text-lg">
-            {gameState.winner ? "Victory!" : "Well matched!"}
+          <p className="mb-6 text-lg relative z-10">
+            {gameState.winner
+              ? isPlayerWin
+                ? "You outplayed the board. Nice."
+                : "Your opponent took this round."
+              : "Well matched!"}
           </p>
           <button
             onClick={() => handleRestart(mode as GameMode)}
-            className="w-full bg-indigo-600 text-white p-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 flex items-center justify-center"
+            className="w-full bg-indigo-600 text-white p-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 flex items-center justify-center relative z-10"
           >
             <RotateCcw size={20} className="mr-2" />
             Play Again
           </button>
           <button
             onClick={() => setMode("selection")}
-            className="w-full mt-3 bg-gray-200 text-gray-800 p-3 rounded-lg font-semibold hover:bg-gray-300 transition duration-150"
+            className="w-full mt-3 bg-gray-200 text-gray-800 p-3 rounded-lg font-semibold hover:bg-gray-300 transition duration-150 relative z-10"
           >
             Change Mode
           </button>
           {mode === "online" && onlineGameId && (
             <button
               onClick={leaveOnlineGame}
-              className="w-full mt-3 text-red-500 hover:text-red-700 underline font-semibold transition duration-150"
+              className="w-full mt-3 text-red-500 hover:text-red-700 underline font-semibold transition duration-150 relative z-10"
             >
               Leave Online Game
             </button>
@@ -1605,7 +1933,14 @@ const App = () => {
         </div>
       </div>
     );
-  }, [showModal, gameState.winner, mode, onlineGameId, leaveOnlineGame]);
+  }, [
+    showModal,
+    gameState.winner,
+    mode,
+    onlineGameId,
+    leaveOnlineGame,
+    localPlayerSymbol,
+  ]);
 
   const RenderLeaveButton = () => {
     if (
@@ -1624,23 +1959,17 @@ const App = () => {
         className="absolute top-4 left-4 p-2 bg-red-600 text-white rounded-full shadow-lg hover:bg-red-700 z-20"
         title={`Leave ${mode} mode`}
       >
-        <X size={20} />
+        <XIcon size={20} />
       </button>
     );
   };
 
   const TopBar = () => {
     const wins = stats.onlineWins;
-    const rankLabel =
-      wins >= 20
-        ? "Grandmaster"
-        : wins >= 10
-        ? "Master"
-        : wins >= 5
-        ? "Challenger"
-        : wins >= 1
-        ? "Rookie"
-        : "Unranked";
+    const rankLabel = getRankLabel(wins);
+    const titleColor = theme === "light" ? "text-slate-900" : "text-white";
+    const subtitleColor =
+      theme === "light" ? "text-slate-500" : "text-slate-400";
 
     return (
       <div className="w-full max-w-lg flex items-center justify-between pt-1 pb-3">
@@ -1649,14 +1978,18 @@ const App = () => {
             ❌⭕
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
+            <p
+              className={`text-[11px] uppercase tracking-[0.2em] ${subtitleColor}`}
+            >
               Base Mini Game
             </p>
-            <h1 className="text-lg font-bold text-white">X &amp; O Arena</h1>
+            <h1 className={`text-lg font-bold ${titleColor}`}>
+              X &amp; O Arena
+            </h1>
           </div>
         </div>
         <div className="text-right text-xs">
-          <p className="text-slate-400">Rank</p>
+          <p className={subtitleColor}>Rank</p>
           <p className="text-emerald-400 font-semibold flex items-center gap-1">
             <Trophy size={14} /> {rankLabel}
           </p>
@@ -1665,17 +1998,24 @@ const App = () => {
     );
   };
 
+  const rootBgClass =
+    theme === "light"
+      ? "bg-slate-100 text-slate-900"
+      : "bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-white";
+
   // Wallet gate
   if (!isConnected || !userWallet) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-white flex flex-col items-center justify-center p-4">
+      <div
+        className={`min-h-screen ${rootBgClass} flex flex-col items-center justify-center p-4`}
+      >
         <TopBar />
         <div className="mt-6">
           <BaseLogoGlow connected={false} />
         </div>
-        <p className="mt-4 text-sm text-gray-300 text-center max-w-xs">
+        <p className="mt-4 text-sm text-gray-500 text-center max-w-xs">
           Connect your{" "}
-          <span className="font-semibold text-sky-300">Base wallet</span> to
+          <span className="font-semibold text-sky-500">Base wallet</span> to
           start playing. Your wins and rewards are stored by wallet address.
         </p>
 
@@ -1701,7 +2041,9 @@ const App = () => {
 
   // Main UI
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-white flex flex-col items-center p-4 sm:p-6 pb-24 font-inter relative">
+    <div
+      className={`min-h-screen ${rootBgClass} flex flex-col items-center p-4 sm:p-6 pb-24 font-inter relative`}
+    >
       <TopBar />
       {RenderLeaveButton()}
       <HeaderBar />
@@ -1749,7 +2091,7 @@ const App = () => {
                     className={`font-bold ${
                       localPlayerSymbol === "X"
                         ? "text-black"
-                        : "text-blue-500"
+                        : "text-sky-400"
                     }`}
                   >
                     {localPlayerSymbol ?? "TBD"}
